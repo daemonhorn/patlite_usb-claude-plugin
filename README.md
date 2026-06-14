@@ -57,11 +57,11 @@ The hooks are configured to call the virtualenv Python, so everything works tran
 **Option B — install dependencies via apt:**
 
 ```bash
-sudo apt install python3-hidapi python3-yaml python3-pynput
+sudo apt install python3-hidapi python3-yaml python3-pynput python3-xlib
 python3 install.py
 ```
 
-`python3-hidapi` installs under the module name `hidapi` rather than `hid` — the plugin handles this automatically via a compatibility shim.
+`python3-hidapi` installs under the module name `hidapi` rather than `hid` — the plugin handles this automatically via a compatibility shim. `python3-xlib` is optional but enables automatic terminal window focus on X11/XWayland before injecting touch-sensor keypresses.
 
 **Restart Claude Code** to activate the hooks.
 
@@ -111,14 +111,26 @@ Models with a **T** in the name have a capacitive touch sensor on the body. When
 
 1. Claude Code fires the `Notification` hook
 2. `patlite.py` sets the amber-flash LED, then spawns a detached background listener
-3. The listener polls the touch sensor via USB every 100 ms for up to `approval_timeout` seconds
-4. When touch is detected, it releases the HID device and injects an Enter keystroke into the focused window
-5. Only one listener runs at a time (PID lock file in `%TEMP%`)
+3. The listener polls the touch sensor via USB every ~100 ms for up to `approval_timeout` seconds
+4. **Early exit:** any subsequent hook event (`PreToolUse`, `PostToolUse`, `Stop`, etc.) signals that the prompt was already answered — the listener exits immediately via a cancel sentinel file
+5. When touch is detected, the listener attempts to focus Claude Code's terminal window before injecting Enter (see [injection strategy](#keystroke-injection-strategy) below)
+6. Only one listener runs at a time (PID lock file in `/tmp`)
+
+### Keystroke injection strategy
+
+The listener walks the Linux `/proc` process tree at spawn time to identify the terminal emulator PID (e.g. `gnome-terminal`, `kitty`), then uses a platform-appropriate method to bring that window to the foreground before injecting Enter via `pynput`:
+
+| Platform | Focus method | Notes |
+|---|---|---|
+| **Linux / X11** | `python3-xlib` — EWMH `_NET_ACTIVE_WINDOW` | Works when terminal runs on X11 or XWayland |
+| **Linux / Wayland** | *(none — Wayland blocks cross-process input)* | pynput still fires; terminal must be focused |
+| **macOS** | `osascript` — activates Terminal / iTerm2 / Warp / etc. | Searches running terminal apps by name |
+| **Windows** | `ctypes` — `EnumWindows` + `SetForegroundWindow` | Targets the terminal PID's visible window |
 
 ### Caveats
 
-- The Enter keystroke goes to whatever window is focused. If you touch the sensor while a different app is in the foreground, Enter goes there instead. Touch only when you see the amber flash.
-- The listener starts on every `Notification` event, not only permission prompts. If the notification was informational (no dialog), the listener times out and exits without doing anything.
+- **Wayland:** targeted window focus is not possible without extra tools (`ydotool`, `wtype`). The Enter keystroke fires via `pynput` regardless, so it goes to whichever window is currently focused. Touch only when you see the amber flash and your Claude Code terminal is in the foreground.
+- The listener starts on every `Notification` event, not only permission prompts. If the notification was informational (no dialog), the listener exits at the next hook event or after `approval_timeout` seconds — whichever comes first.
 
 ### Configuration
 
@@ -130,13 +142,13 @@ touch:
 
 ### Dependencies
 
-The touch feature requires `pynput` for cross-platform keystroke injection. It is included in `requirements.txt` and installed automatically by the installer.
+`pynput` is required for keystroke injection (all platforms). On Linux, `python3-xlib` enables targeted window focus on X11 systems. Both are included in `requirements.txt` and installed automatically by the installer.
 
 Manual install if needed:
 
 ```bash
 # Debian/Ubuntu
-sudo apt install python3-pynput
+sudo apt install python3-pynput python3-xlib
 
 # Other platforms
 pip install pynput
@@ -327,8 +339,8 @@ Or install `python3-venv` and re-run `python3 install.py` to let the installer c
 **Touch sensor doesn't inject Enter / `pynput` error in logs**
 - Install pynput: `sudo apt install python3-pynput` (Debian/Ubuntu) or `pip install pynput` (other)
 - Verify: `python3 -c "from pynput.keyboard import Key, Controller"`
-- On Linux with Wayland: `pynput` may not work — use X11 or set `touch.enabled: false` in `config.yaml`
-- Confirm the Claude Code terminal window is focused when you touch the sensor
+- On Linux/Wayland: targeted window focus isn't supported without extra tools — pynput fires to whatever window is focused. Keep the Claude Code terminal in the foreground when expecting a permission prompt, or install `ydotool`/`wtype` and set `touch.enabled: false` if it causes accidental keypresses elsewhere
+- On Linux/X11: install `python3-xlib` (`sudo apt install python3-xlib`) to enable automatic terminal focus before injection
 
 **Wrong Python used by hooks**
 - Re-run `python install.py --uninstall` then `python install.py` with the correct Python interpreter
@@ -342,7 +354,8 @@ Or install `python3-venv` and re-run `python3 install.py` to let the installer c
 | **Windows** | Works out of the box — Windows HID driver provides access |
 | **macOS** | Works out of the box — IOHIDManager provides access |
 | **Linux** | Requires udev rules — installer handles this; see [Linux section](#linux-only--usb-permissions) |
-| **Debian 12+ / Ubuntu 23.04+** | PEP 668 managed Python — installer auto-creates a venv, or use `apt install python3-hidapi python3-yaml python3-pynput`; see [Debian section](#debian--ubuntu) |
+| **Debian 12+ / Ubuntu 23.04+** | PEP 668 managed Python — installer auto-creates a venv, or use `apt install python3-hidapi python3-yaml python3-pynput python3-xlib`; see [Debian section](#debian--ubuntu) |
+| **Linux / Wayland** | Touch-sensor Enter injection works but targets the focused window — no cross-process input injection without `ydotool`/`wtype`; see [Caveats](#caveats) |
 
 ---
 

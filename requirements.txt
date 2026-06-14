@@ -1,3 +1,4 @@
 hidapi
 pyyaml
 pynput
+python-xlib; sys_platform == "linux"
