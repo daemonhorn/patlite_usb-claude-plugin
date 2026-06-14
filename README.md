@@ -32,14 +32,36 @@ Any Patlite NE-USB series device (VID `0x191A`, PID `0x6001`):
 ```bash
 git clone git@github.com:daemonhorn/patlite_usb-claude-plugin.git
 cd patlite_usb-claude-plugin
-python install.py
+python3 install.py
 ```
 
 The installer:
-1. Installs `hidapi` and `pyyaml` via pip
+1. Installs Python dependencies (see below for platform notes)
 2. Copies `patlite.py` and `config.yaml` to `~/.claude/plugins/patlite/`
 3. Adds hooks to `~/.claude/settings.json`
 4. Runs a quick light test (green → blue → off)
+
+### Debian / Ubuntu
+
+Debian 12+ and Ubuntu 23.04+ use a [PEP 668](https://peps.python.org/pep-0668/) managed Python environment that blocks system-wide `pip install`. The installer detects this automatically and falls back to one of two paths:
+
+**Option A — let the installer create a virtualenv (recommended):**
+
+```bash
+sudo apt install python3-venv   # needed once
+python3 install.py              # creates ~/.claude/plugins/patlite/.venv automatically
+```
+
+The hooks are configured to call the virtualenv Python, so everything works transparently.
+
+**Option B — install dependencies via apt:**
+
+```bash
+sudo apt install python3-hidapi python3-yaml python3-pynput
+python3 install.py
+```
+
+`python3-hidapi` installs under the module name `hidapi` rather than `hid` — the plugin handles this automatically via a compatibility shim.
 
 **Restart Claude Code** to activate the hooks.
 
@@ -108,9 +130,15 @@ touch:
 
 ### Dependencies
 
-The touch feature requires `pynput` for cross-platform keystroke injection:
+The touch feature requires `pynput` for cross-platform keystroke injection. It is included in `requirements.txt` and installed automatically by the installer.
+
+Manual install if needed:
 
 ```bash
+# Debian/Ubuntu
+sudo apt install python3-pynput
+
+# Other platforms
 pip install pynput
 ```
 
@@ -268,16 +296,25 @@ The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patl
 **`No Patlite device found` error**
 - Confirm the device is plugged in:
   ```bash
-  python -c "import hid; [print(d) for d in hid.enumerate() if d['vendor_id'] == 0x191A]"
+  # pip hid package
+  python3 -c "import hid; [print(d) for d in hid.enumerate() if d['vendor_id'] == 0x191A]"
+  # Debian python3-hidapi package
+  python3 -c "import hidapi; [print(d) for d in hidapi.enumerate(0x191A)]"
   ```
 - On Linux: check udev rules and `plugdev` group membership
 
-**`ImportError: hidapi`**
-- Run `pip install hidapi` and retry
-- Verify: `python -c "import hid; print('ok')"`
+**`ImportError: No module named 'hid'` or `'hidapi'`**
 
-**`hidapi` import fails even after installing it**
-- There are two conflicting packages that both use `import hid`: the ctypes-based `hid` package and the Cython-based `hidapi` package. If you have both installed, whichever was installed last wins, and the other's DLL may not load.
+On standard platforms, re-run the installer — it installs dependencies automatically.
+
+On Debian/Ubuntu, install via apt:
+```bash
+sudo apt install python3-hidapi python3-yaml python3-pynput
+```
+Or install `python3-venv` and re-run `python3 install.py` to let the installer create a virtualenv.
+
+**`hidapi` import fails even after installing it (non-Debian)**
+- There are two pip packages that both expose `import hid`: the ctypes-based `hid` package and the Cython-based `hidapi` package. If both are installed the wrong one may load first.
 - Fix: `pip uninstall hid` — then only `hidapi` remains.
 - Check which you have: `pip list | grep -i hid`
 
@@ -288,7 +325,8 @@ The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patl
 - Disable `pre_tool`/`post_tool` by setting both to `color: "off"` in `config.yaml`
 
 **Touch sensor doesn't inject Enter / `pynput` error in logs**
-- Run `pip install pynput` and confirm `python -c "from pynput.keyboard import Key, Controller"` succeeds
+- Install pynput: `sudo apt install python3-pynput` (Debian/Ubuntu) or `pip install pynput` (other)
+- Verify: `python3 -c "from pynput.keyboard import Key, Controller"`
 - On Linux with Wayland: `pynput` may not work — use X11 or set `touch.enabled: false` in `config.yaml`
 - Confirm the Claude Code terminal window is focused when you touch the sensor
 
@@ -304,6 +342,7 @@ The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patl
 | **Windows** | Works out of the box — Windows HID driver provides access |
 | **macOS** | Works out of the box — IOHIDManager provides access |
 | **Linux** | Requires udev rules — installer handles this; see [Linux section](#linux-only--usb-permissions) |
+| **Debian 12+ / Ubuntu 23.04+** | PEP 668 managed Python — installer auto-creates a venv, or use `apt install python3-hidapi python3-yaml python3-pynput`; see [Debian section](#debian--ubuntu) |
 
 ---
 
