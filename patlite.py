@@ -13,9 +13,9 @@ import time
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.yaml")
 
-VENDOR_ID = 0x191A
+VENDOR_ID = 0x191A  # Patlite default VID (kept for backward compat)
 
-# LED byte: upper nibble = color, lower nibble = pattern
+# LED byte for Patlite: upper nibble = color, lower nibble = pattern
 COLORS = {
     "off":    0x0,
     "red":    0x1,
@@ -51,6 +51,26 @@ BUZZER_PATTERNS = {
     "star":         0x6,
     "london":       0x7,
     "keep":         0xF,
+}
+
+# RGB color table for devices that use raw RGB values (Luxafor, blink(1)).
+RGB_COLORS = {
+    "off":    (0,   0,   0),
+    "red":    (255, 0,   0),
+    "green":  (0,   200, 0),
+    "amber":  (255, 80,  0),
+    "yellow": (255, 180, 0),
+    "blue":   (0,   0,   255),
+    "purple": (128, 0,   128),
+    "cyan":   (0,   200, 200),
+    "white":  (255, 255, 255),
+}
+
+# Default VID/PID per driver — used when config.yaml omits device.vid/pid.
+DRIVER_DEFAULTS = {
+    "patlite": {"vid": 0x191A, "pid": 0x6001},
+    "luxafor":  {"vid": 0x04D8, "pid": 0xF372},
+    "blink1":   {"vid": 0x27B8, "pid": 0x01ED},
 }
 
 # GETSTATE command: asks the device to report current touch sensor state.
@@ -116,6 +136,17 @@ class _HidapiDeviceFacade:
         # Debian hidapi: write(payload_bytes, report_id=bytes([rid])).
         self._dev.write(bytes(data[1:]), report_id=bytes([data[0]]))
 
+    def send_feature_report(self, data):
+        # pip hid: data[0] is the report_id.
+        # Debian hidapi: send_feature_report(payload_bytes, report_id=bytes([rid])).
+        self._dev.send_feature_report(bytes(data[1:]), report_id=bytes([data[0]]))
+
+    def get_feature_report(self, report_id, length):
+        # pip hid: (report_id_int, length).
+        # Debian hidapi: (length, report_id=bytes([rid])).
+        result = self._dev.get_feature_report(length, report_id=bytes([report_id]))
+        return list(result) if result is not None else []
+
     def read(self, size, timeout_ms=0):
         result = self._dev.read(size, timeout_ms=timeout_ms)
         return list(result) if result is not None else []
@@ -135,6 +166,12 @@ def load_config():
         print(f"patlite: failed to load config: {e}", file=sys.stderr)
         sys.exit(1)
 
+
+def _detect_driver(config) -> str:
+    return str(config.get("device", {}).get("driver", "patlite")).lower()
+
+
+# ── Patlite signal encoding ──────────────────────────────────────────────────
 
 def build_led_byte(color_name, pattern_name) -> int:
     color = COLORS.get(str(color_name).lower(), 0x0)
@@ -172,28 +209,137 @@ def build_buzzer_bytes(buzzer_name, volume) -> "tuple[int, int]":
     return bz_byte, vol_byte
 
 
+def _send_patlite(dev, event_cfg):
+    color = event_cfg.get("color", "off")
+    pattern = event_cfg.get("pattern", "off")
+    led_byte = build_led_byte(color, pattern)
+    bz_byte, vol_byte = build_buzzer_bytes(
+        event_cfg.get("buzzer", "keep"),
+        event_cfg.get("volume", "keep"),
+    )
+    dev.write([0x00, 0x00, 0x00, bz_byte, vol_byte, led_byte, 0x00, 0x00, 0x00])
+
+
+# ── Luxafor driver (VID 0x04D8 / PID 0xF372) ────────────────────────────────
+# 9-byte Output Reports sent via dev.write().
+# Byte layout: [report_id, cmd, target, R, G, B, arg1, arg2, arg3]
+#   cmd 0x01 solid:  target=0xFF, RGB, unused×3
+#   cmd 0x03 strobe: target=0xFF, RGB, speed(0=fast), unused, repeat(0=∞)
+#   cmd 0x04 wave:   wave_type(1-5), RGB, unused, repeat(0=∞), speed(0=fast)
+
+def _send_luxafor(dev, color_name, pattern_name):
+    r, g, b = RGB_COLORS.get(str(color_name).lower(), (0, 0, 0))
+    pat = str(pattern_name).lower()
+
+    if pat == "off" or color_name == "off":
+        dev.write([0x00, 0x01, 0xFF, 0, 0, 0, 0, 0, 0])
+    elif pat in ("flash", "flash2"):
+        speed = 8 if pat == "flash" else 24
+        dev.write([0x00, 0x03, 0xFF, r, g, b, speed, 0x00, 0])  # strobe, infinite
+    elif pat in ("pulse", "pulse2", "pulse3", "pulse4"):
+        speed = {"pulse": 48, "pulse2": 36, "pulse3": 24, "pulse4": 16}[pat]
+        dev.write([0x00, 0x04, 1, r, g, b, 0x00, 0, speed])     # wave type 1, infinite
+    else:  # solid
+        dev.write([0x00, 0x01, 0xFF, r, g, b, 0, 0, 0])
+
+
+def _luxafor_off(dev):
+    dev.write([0x00, 0x01, 0xFF, 0, 0, 0, 0, 0, 0])
+
+
+# ── blink(1) driver (VID 0x27B8 / PID 0x01ED) ───────────────────────────────
+# 8-byte (mk1) or 9-byte (mk2) USB Feature Reports sent via send_feature_report().
+# All reports start with report_id=0x01.
+#
+# 'n' (0x6e) fade_to_rgb: [0x01, 0x6e, R, G, B, th, tl, ledn]
+#    th/tl = fade_ms//10 as big-endian uint16; ledn=0 → all LEDs
+# 'P' (0x50) write_pattern_line:
+#    mk1: [0x01, 0x50, th, tl, R, G, B, pos]
+#    mk2: [0x01, 0x50, R, G, B, th, tl, pos, ledn]
+# 'p' (0x70) play: [0x01, 0x70, play, start, end, count, 0, 0]
+#    play=1 start / 0 stop; count=0 loops forever
+# 'v' (0x76) version: [0x01, 0x76, 0, 0, 0, 0, 0, 0]
+#    response bytes 3-4 are ASCII major/minor version digits
+
+def _blink1_is_mk2(dev) -> bool:
+    """Return True if the connected blink(1) is mk2 firmware (v2.0+)."""
+    try:
+        dev.send_feature_report([0x01, 0x76, 0, 0, 0, 0, 0, 0])
+        resp = dev.get_feature_report(0x01, 9)
+        if resp and len(resp) >= 5:
+            return (resp[3] - ord('0')) >= 2
+    except Exception:
+        pass
+    return False
+
+
+def _blink1_write_pattern(dev, is_mk2, ms, r, g, b, pos):
+    t = ms // 10
+    th, tl = t >> 8, t & 0xFF
+    if is_mk2:
+        dev.send_feature_report([0x01, 0x50, r, g, b, th, tl, pos, 0])
+    else:
+        dev.send_feature_report([0x01, 0x50, th, tl, r, g, b, pos])
+
+
+def _send_blink1(dev, color_name, pattern_name):
+    r, g, b = RGB_COLORS.get(str(color_name).lower(), (0, 0, 0))
+    pat = str(pattern_name).lower()
+
+    if pat == "off" or color_name == "off":
+        dev.send_feature_report([0x01, 0x70, 0, 0, 0, 0, 0, 0])   # stop pattern
+        dev.send_feature_report([0x01, 0x6e, 0, 0, 0, 0, 0, 0])   # fade to off
+        return
+
+    is_mk2 = _blink1_is_mk2(dev)
+
+    if pat in ("flash", "flash2", "pulse", "pulse2", "pulse3", "pulse4"):
+        # Write a 2-frame loop into pattern RAM (color on → off) and play it.
+        ms = {
+            "flash":  300, "flash2": 600,
+            "pulse":  800, "pulse2": 600, "pulse3": 400, "pulse4": 300,
+        }[pat]
+        _blink1_write_pattern(dev, is_mk2, ms, r, g, b, 0)         # frame 0: color
+        _blink1_write_pattern(dev, is_mk2, ms, 0, 0, 0, 1)         # frame 1: off
+        dev.send_feature_report([0x01, 0x70, 1, 0, 1, 0, 0, 0])    # play 0→1, infinite
+    else:  # solid
+        dev.send_feature_report([0x01, 0x70, 0, 0, 0, 0, 0, 0])    # stop any pattern
+        dev.send_feature_report([0x01, 0x6e, r, g, b, 0, 0, 0])    # set color immediately
+
+
+def _blink1_off(dev):
+    dev.send_feature_report([0x01, 0x70, 0, 0, 0, 0, 0, 0])    # stop pattern
+    dev.send_feature_report([0x01, 0x6e, 0, 0, 0, 0, 0, 0])    # fade to off
+
+
+# ── device open ──────────────────────────────────────────────────────────────
+
 def _open_device(config):
-    """Open and return the HID device, resolving PID from config or auto-detect."""
+    """Open and return the HID device, resolving VID/PID from config or driver defaults."""
     hid = _get_hid()
     device_cfg = config.get("device", {})
-    vid_raw = device_cfg.get("vid", VENDOR_ID)
-    vid = int(str(vid_raw), 16) if isinstance(vid_raw, str) else vid_raw
-    pid = device_cfg.get("pid")
+    driver = str(device_cfg.get("driver", "patlite")).lower()
+    defaults = DRIVER_DEFAULTS.get(driver, DRIVER_DEFAULTS["patlite"])
 
-    if pid is None:
+    vid_raw = device_cfg.get("vid", defaults["vid"])
+    vid = int(str(vid_raw), 16) if isinstance(vid_raw, str) else int(vid_raw)
+
+    pid_raw = device_cfg.get("pid", defaults["pid"])
+    if pid_raw is None:
         found = [d for d in hid.enumerate() if d["vendor_id"] == vid]
         if not found:
-            print(f"patlite: no Patlite device found (VID={hex(vid)})", file=sys.stderr)
-            for d in hid.enumerate():
-                print(f"  VID={hex(d['vendor_id'])} PID={hex(d['product_id'])} "
-                      f"{d['manufacturer_string']} {d['product_string']}", file=sys.stderr)
+            print(f"patlite: no device found (VID={hex(vid)})", file=sys.stderr)
             sys.exit(1)
         pid = found[0]["product_id"]
+    else:
+        pid = int(str(pid_raw), 16) if isinstance(pid_raw, str) else int(pid_raw)
 
     dev = hid.device()
     dev.open(vid, pid)
     return dev
 
+
+# ── signal dispatch ──────────────────────────────────────────────────────────
 
 def send_signal(event: str) -> None:
     config = load_config()
@@ -203,30 +349,31 @@ def send_signal(event: str) -> None:
         print(f"patlite: unknown event '{event}'", file=sys.stderr)
         sys.exit(1)
 
-    color = event_cfg.get("color", "off")
-    pattern = event_cfg.get("pattern", "off")
-    led_byte = build_led_byte(color, pattern)
-    bz_byte, vol_byte = build_buzzer_bytes(
-        event_cfg.get("buzzer", "keep"),
-        event_cfg.get("volume", "keep"),
-    )
-
     if _get_hid() is None:
         print("patlite: hidapi not installed.", file=sys.stderr)
         print("  Debian/Ubuntu: sudo apt install python3-hidapi", file=sys.stderr)
         print("  Other:         pip install hidapi", file=sys.stderr)
         sys.exit(1)
 
+    driver = _detect_driver(config)
+
     try:
         dev = _open_device(config)
-        dev.write([0x00, 0x00, 0x00, bz_byte, vol_byte, led_byte, 0x00, 0x00, 0x00])
+        if driver == "luxafor":
+            _send_luxafor(dev, event_cfg.get("color", "off"), event_cfg.get("pattern", "off"))
+        elif driver == "blink1":
+            _send_blink1(dev, event_cfg.get("color", "off"), event_cfg.get("pattern", "off"))
+        else:  # patlite (default)
+            _send_patlite(dev, event_cfg)
         dev.close()
     except Exception as e:
         print(f"patlite: device error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Touch sensor is Patlite-only (NE-WT-USB / NE-ST-USB).
     if event == "notification":
-        _spawn_touch_listener(config)
+        if driver == "patlite":
+            _spawn_touch_listener(config)
     else:
         _cancel_listen()
 
@@ -583,21 +730,31 @@ def main():
     # "off" is a built-in alias that always turns the light off
     if event == "off":
         import yaml
-        cfg = {"device": {}, "events": {"off": {"color": "off", "pattern": "off"}}}
+        cfg = {}
         try:
             with open(CONFIG_PATH) as f:
-                cfg = yaml.safe_load(f)
-            cfg.setdefault("events", {})["off"] = {"color": "off", "pattern": "off"}
+                cfg = yaml.safe_load(f) or {}
         except Exception:
             pass
+
         _cancel_listen()
+        driver = _detect_driver(cfg)
         hid = _get_hid()
         if hid is not None:
-            found = [d for d in hid.enumerate() if d["vendor_id"] == VENDOR_ID]
+            device_cfg = cfg.get("device", {})
+            defaults = DRIVER_DEFAULTS.get(driver, DRIVER_DEFAULTS["patlite"])
+            vid_raw = device_cfg.get("vid", defaults["vid"])
+            vid = int(str(vid_raw), 16) if isinstance(vid_raw, str) else int(vid_raw)
+            found = [d for d in hid.enumerate() if d["vendor_id"] == vid]
             if found:
                 dev = hid.device()
-                dev.open(VENDOR_ID, found[0]["product_id"])
-                dev.write([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                dev.open(vid, found[0]["product_id"])
+                if driver == "luxafor":
+                    _luxafor_off(dev)
+                elif driver == "blink1":
+                    _blink1_off(dev)
+                else:
+                    dev.write([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
                 dev.close()
         return
 

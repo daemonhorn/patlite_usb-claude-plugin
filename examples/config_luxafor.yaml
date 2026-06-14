@@ -1,0 +1,47 @@
+# config.yaml for Luxafor Flag / Orb / Mute
+# Copy to ~/.claude/plugins/patlite/config.yaml
+#
+# Device: Greynut / Microchip VID 0x04D8 / PID 0xF372
+# Protocol reference: https://github.com/torvalds/linux/blob/master/drivers/hid/hid-led.c
+#
+# LED colors:   red, amber, yellow, green, blue, cyan, purple, white, "off"
+# LED patterns: solid, flash, flash2, pulse, pulse2, pulse3, pulse4, "off"
+#   solid      — steady color
+#   flash      — fast strobe (cmd 0x03, speed=8)
+#   flash2     — slow strobe (cmd 0x03, speed=24)
+#   pulse–4    — breathing wave effect at decreasing speeds (cmd 0x04)
+#
+# Note: Luxafor has no buzzer — buzzer/volume fields are ignored.
+# Note: Luxafor has no touch sensor — touch.enabled has no effect.
+
+device:
+  driver: luxafor  # VID 0x04D8 / PID 0xF372 used automatically
+
+events:
+  notification:
+    color: amber
+    pattern: flash
+
+  stop:
+    color: green
+    pattern: solid
+
+  working:
+    color: blue
+    pattern: solid
+
+  pre_tool:
+    color: cyan
+    pattern: pulse
+
+  post_tool:
+    color: blue
+    pattern: solid
+
+  idle:
+    color: "off"
+    pattern: "off"
+
+touch:
+  enabled: false
+  approval_timeout: 30

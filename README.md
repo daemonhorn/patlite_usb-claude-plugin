@@ -4,6 +4,8 @@ Physical feedback for Claude Code via a [Patlite NE-USB](https://www.patlite.com
 
 ## Supported devices
 
+### Patlite NE-USB (default)
+
 All NE-USB series models share the same USB VID/PID and the same HID protocol:
 
 | Model | Colors | Touch sensor | Buzzer |
@@ -18,6 +20,22 @@ VID: `0x191A` / PID: `0x6001` (all models)
 > **Note:** The available colors on your specific unit depend on its LED configuration. Experiment with colors in `config.yaml` — unsupported ones silently fall back to the closest available color.
 
 Protocol reference: [PATLITE-Corporation/NE-USB\_linux\_python\_example](https://github.com/PATLITE-Corporation/NE-USB_linux_python_example)
+
+### Luxafor Flag / Orb / Mute (`driver: luxafor`)
+
+| VID | PID | Colors | Patterns | Buzzer | Touch |
+|-----|-----|--------|----------|--------|-------|
+| `0x04D8` | `0xF372` | Full RGB | solid, flash, flash2, pulse–pulse4 | No | No |
+
+Patterns use native Luxafor hardware commands: solid color (cmd `0x01`), strobe (cmd `0x03`), and breathing wave (cmd `0x04`). All LEDs are targeted simultaneously (`0xFF`).
+
+### ThingM blink(1) mk1 / mk2 / mk3 (`driver: blink1`)
+
+| VID | PID | Colors | Patterns | Buzzer | Touch |
+|-----|-----|--------|----------|--------|-------|
+| `0x27B8` | `0x01ED` | Full RGB | solid, flash, flash2, pulse–pulse4 | No | No |
+
+Flash and pulse patterns are implemented by writing a 2-frame loop into the device's onboard pattern RAM (`P` command) and playing it (`p` command). mk1 vs mk2 firmware format is auto-detected via the `v` command. Solid color stops any running pattern and sets the color immediately.
 
 ---
 
@@ -177,10 +195,13 @@ Sound is **off** by default for all events. Enable it per-event in `config.yaml`
 
 Edit `~/.claude/plugins/patlite/config.yaml` to customize behavior. Changes take effect immediately — no restart needed.
 
+Ready-made configs for non-Patlite devices are in the [`examples/`](examples/) directory — copy the right one over `~/.claude/plugins/patlite/config.yaml`.
+
 ```yaml
 device:
-  vid: 0x191A   # Patlite vendor ID — do not change
-  pid: 0x6001   # NE-USB product ID (shared across all NE-USB models)
+  driver: patlite  # Options: patlite | luxafor | blink1
+  vid: 0x191A      # Override VID (optional — driver default used if omitted)
+  pid: 0x6001      # Override PID (optional — driver default used if omitted)
 
 events:
   notification:
@@ -324,7 +345,11 @@ The `off` argument always turns the light off and silences the buzzer regardless
 
 ### USB protocol
 
-The Patlite NE-USB is a USB HID class device (no custom driver required). The plugin sends 9-byte HID output reports:
+All supported devices are USB HID class devices — no custom driver required on any platform. Protocol details by driver:
+
+#### Patlite (`driver: patlite`)
+
+Sends 9-byte HID **output** reports:
 
 ```
 Byte 0:  Report ID       = 0x00
@@ -340,6 +365,32 @@ Bytes 6–8: Padding       = 0x00
 ```
 
 Source: [PATLITE-Corporation/NE-USB\_linux\_python\_example](https://github.com/PATLITE-Corporation/NE-USB_linux_python_example)
+
+#### Luxafor (`driver: luxafor`)
+
+Sends 9-byte HID **output** reports:
+
+```
+Byte 0:  Report ID  = 0x00
+Byte 1:  Command    = 0x01 solid / 0x03 strobe / 0x04 wave
+Byte 2:  LED target = 0xFF (all)
+Bytes 3–5: R, G, B (0–255)
+Bytes 6–8: command-specific args (speed, repeat)
+```
+
+#### ThingM blink(1) (`driver: blink1`)
+
+Sends 8-byte (mk1) or 9-byte (mk2) USB **feature** reports:
+
+```
+Byte 0:  Report ID   = 0x01
+Byte 1:  Command     = 0x6e fade_to_rgb / 0x50 write_pattern / 0x70 play / 0x76 version
+Bytes 2+: command-specific payload (RGB, fade time in 10ms units, pattern position)
+```
+
+Flash and pulse patterns write a 2-frame color→black loop into the device's onboard pattern RAM and start the looping playback engine. Solid stops playback and sets color immediately.
+
+Source: [todbot/blink1](https://github.com/todbot/blink1)
 
 ### Claude Code hooks
 

@@ -1,0 +1,50 @@
+# config.yaml for ThingM blink(1) mk1 / mk2 / mk3
+# Copy to ~/.claude/plugins/patlite/config.yaml
+#
+# Device: ThingM VID 0x27B8 / PID 0x01ED
+# Protocol reference: https://github.com/todbot/blink1
+#
+# LED colors:   red, amber, yellow, green, blue, cyan, purple, white, "off"
+# LED patterns: solid, flash, flash2, pulse, pulse2, pulse3, pulse4, "off"
+#   solid      — immediate color set (stops any running pattern)
+#   flash      — 300ms on / 300ms off loop written to pattern RAM
+#   flash2     — 600ms on / 600ms off loop
+#   pulse      — 800ms fade in / 800ms fade out loop  (mk2 looks especially smooth)
+#   pulse2–4   — same fade loop at 600/400/300ms per half-cycle
+#
+# mk1 vs mk2: version is auto-detected; write_pattern_line format differs.
+#
+# Note: blink(1) has no buzzer — buzzer/volume fields are ignored.
+# Note: blink(1) has no touch sensor — touch.enabled has no effect.
+
+device:
+  driver: blink1  # VID 0x27B8 / PID 0x01ED used automatically
+
+events:
+  notification:
+    color: amber
+    pattern: flash
+
+  stop:
+    color: green
+    pattern: solid
+
+  working:
+    color: blue
+    pattern: solid
+
+  pre_tool:
+    color: cyan
+    pattern: pulse
+
+  post_tool:
+    color: blue
+    pattern: solid
+
+  idle:
+    color: "off"
+    pattern: "off"
+
+touch:
+  enabled: false
+  approval_timeout: 30

@@ -6,8 +6,9 @@
 # Protocol reference: https://github.com/PATLITE-Corporation/NE-USB_linux_python_example
 
 device:
-  vid: 0x191A   # Patlite vendor ID
-  pid: 0x6001   # NE-USB product ID (shared across all NE-USB models)
+  driver: patlite  # Options: patlite | luxafor | blink1
+  vid: 0x191A      # Patlite vendor ID (omit to use driver default)
+  pid: 0x6001      # NE-USB product ID (omit to use driver default)
 
 # Event -> signal mapping
 #
