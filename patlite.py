@@ -236,18 +236,32 @@ def _check_cancelled() -> bool:
     return os.path.exists(_CANCEL_FILE)
 
 
-def _find_controlling_tty() -> "str | None":
-    """Walk up the Linux /proc process tree to find the first ancestor with a PTY stdin."""
+def _find_controlling_tty() -> "tuple[str | None, int | None]":
+    """
+    Walk the /proc process tree (Linux only) from the current hook invocation
+    upward.  Returns (tty_path, terminal_emulator_pid).
+
+    Logic: skip ancestors with no PTY; record the PTY once we find it; the
+    first ancestor that drops back to a non-PTY stdin is the terminal emulator.
+    """
+    if sys.platform != "linux":
+        return None, None
     pid = os.getpid()
     seen: set = set()
+    tty: "str | None" = None
+    in_pty_section = False
     while pid > 1 and pid not in seen:
         seen.add(pid)
         try:
-            target = os.readlink(f"/proc/{pid}/fd/0")
-            if target.startswith("/dev/pts/") or target.startswith("/dev/tty"):
-                return target
+            fd0 = os.readlink(f"/proc/{pid}/fd/0")
+            is_pty = fd0.startswith("/dev/pts/") or fd0.startswith("/dev/tty")
         except OSError:
-            pass
+            fd0, is_pty = None, False
+        if is_pty and tty is None:
+            tty = fd0
+            in_pty_section = True
+        if in_pty_section and not is_pty:
+            return tty, pid   # first non-PTY ancestor after PTY section
         try:
             with open(f"/proc/{pid}/status") as f:
                 for line in f:
@@ -258,25 +272,117 @@ def _find_controlling_tty() -> "str | None":
                     break
         except OSError:
             break
-    return None
+    return tty, None
 
 
-def _inject_enter(tty: "str | None" = None) -> None:
-    # Preferred path: write '\n' directly to Claude Code's PTY via TIOCSTI.
-    # This targets the correct terminal regardless of window focus and works
-    # under both X11 and Wayland.  TIOCSTI is restricted on Linux ≥ 6.2 by
-    # default; we fall through silently if it fails.
-    if tty and sys.platform == "linux":
+# ── platform-specific window focus helpers ───────────────────────────────────
+
+def _try_focus_x11_pid(pid: int) -> bool:
+    """
+    Find the X11 window whose _NET_WM_PID matches pid and request activation
+    via EWMH _NET_ACTIVE_WINDOW.  Returns True if a window was found and the
+    message was sent (the WM may still deny the raise on Wayland/XWayland).
+    Requires python3-xlib; silently returns False if unavailable.
+    """
+    try:
+        from Xlib import display as xdisplay, X
+        from Xlib.protocol import event as xevent
+        d = xdisplay.Display()
+        root = d.screen().root
+        NET_WM_PID        = d.intern_atom("_NET_WM_PID")
+        NET_CLIENT_LIST   = d.intern_atom("_NET_CLIENT_LIST")
+        NET_ACTIVE_WINDOW = d.intern_atom("_NET_ACTIVE_WINDOW")
+        client_list = root.get_full_property(NET_CLIENT_LIST, X.AnyPropertyType)
+        if not client_list:
+            return False
+        window = None
+        for wid in client_list.value:
+            try:
+                w = d.create_resource_object("window", wid)
+                prop = w.get_full_property(NET_WM_PID, X.AnyPropertyType)
+                if prop and len(prop.value) > 0 and prop.value[0] == pid:
+                    window = w
+                    break
+            except Exception:
+                continue
+        if window is None:
+            return False
+        ev = xevent.ClientMessage(
+            window=window,
+            client_type=NET_ACTIVE_WINDOW,
+            data=(32, [2, X.CurrentTime, 0, 0, 0]),
+        )
+        root.send_event(
+            ev,
+            event_mask=X.SubstructureRedirectMask | X.SubstructureNotifyMask,
+        )
+        d.sync()
+        time.sleep(0.05)
+        return True
+    except Exception:
+        return False
+
+
+def _try_focus_win32_pid(pid: int) -> bool:
+    """
+    Windows: enumerate visible top-level windows, find one belonging to pid,
+    restore and bring it to the foreground.  Returns True if a window was found.
+    """
+    try:
+        import ctypes
+        import ctypes.wintypes
+        found: list = [None]
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+        def _cb(hwnd: "ctypes.wintypes.HWND", _lp: "ctypes.wintypes.LPARAM") -> bool:
+            pid_buf = ctypes.wintypes.DWORD()
+            ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid_buf))
+            if (pid_buf.value == pid
+                    and ctypes.windll.user32.IsWindowVisible(hwnd)
+                    and found[0] is None):
+                found[0] = hwnd
+                return False
+            return True
+
+        ctypes.windll.user32.EnumWindows(_cb, 0)
+        if found[0]:
+            ctypes.windll.user32.ShowWindow(found[0], 9)   # SW_RESTORE
+            ctypes.windll.user32.SetForegroundWindow(found[0])
+            time.sleep(0.05)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _try_focus_macos_terminal() -> bool:
+    """
+    macOS: find the first running terminal app (Terminal, iTerm2, etc.) and
+    activate it.  Returns True if a known terminal app was activated.
+    """
+    import subprocess
+    for app in ("Terminal", "iTerm2", "iTerm", "Warp", "Alacritty", "kitty", "Hyper"):
         try:
-            import fcntl
-            fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
-            fcntl.ioctl(fd, 0x5412, b"\n")  # 0x5412 = TIOCSTI
-            os.close(fd)
-            return
-        except OSError:
-            pass
+            result = subprocess.run(
+                ["osascript", "-e",
+                 f'tell application "System Events" to '
+                 f'(name of processes) contains "{app}"'],
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.stdout.strip() == "true":
+                subprocess.run(
+                    ["osascript", "-e", f'tell application "{app}" to activate'],
+                    capture_output=True, timeout=2,
+                )
+                time.sleep(0.1)
+                return True
+        except Exception:
+            continue
+    return False
 
-    # Fallback: system-wide pynput injection (goes to whatever window is focused).
+
+def _pynput_inject() -> None:
+    """Inject Enter via pynput — goes to whichever window currently has focus."""
     try:
         from pynput.keyboard import Key, Controller
         kb = Controller()
@@ -292,7 +398,27 @@ def _inject_enter(tty: "str | None" = None) -> None:
         sys.exit(1)
 
 
-def touch_listen(timeout_s: int = 30, tty: "str | None" = None) -> None:
+def _inject_enter(terminal_pid: "int | None" = None) -> None:
+    """
+    Inject Enter into Claude Code's terminal.
+
+    Strategy (best-effort, degrades gracefully):
+      Linux   — try python3-xlib EWMH focus (X11 only; no-op on native Wayland),
+                then pynput
+      macOS   — try osascript to activate the parent terminal app, then pynput
+      Windows — try SetForegroundWindow on the terminal PID's window, then pynput
+      all     — pynput as the guaranteed fallback
+    """
+    if sys.platform == "linux" and terminal_pid:
+        _try_focus_x11_pid(terminal_pid)          # no-op on Wayland, works on X11
+    elif sys.platform == "darwin":
+        _try_focus_macos_terminal()
+    elif sys.platform == "win32" and terminal_pid:
+        _try_focus_win32_pid(terminal_pid)
+    _pynput_inject()
+
+
+def touch_listen(timeout_s: int = 30, terminal_pid: "int | None" = None) -> None:
     """
     Poll for touch sensor input and inject Enter when detected.
     Spawned as a detached background process by the notification handler.
@@ -325,7 +451,7 @@ def touch_listen(timeout_s: int = 30, tty: "str | None" = None) -> None:
                 # Rising edge — close device before injecting so LED writes can reopen it
                 dev.close()
                 dev = None
-                _inject_enter(tty)
+                _inject_enter(terminal_pid)
                 return
 
             last_touched = touched
@@ -362,12 +488,11 @@ def _spawn_touch_listener(config: dict) -> None:
     script = os.path.abspath(__file__)
     cmd = [sys.executable, script, "touch_listen", "--timeout", str(timeout)]
 
-    # Find the Claude Code terminal's PTY now (while still in the hook process
-    # tree) and pass it to the detached listener for direct input injection.
-    if sys.platform == "linux":
-        tty = _find_controlling_tty()
-        if tty:
-            cmd += ["--tty", tty]
+    # Discover the terminal emulator PID now (while still in the hook process
+    # tree) and pass it to the detached listener for window focus targeting.
+    _tty, terminal_pid = _find_controlling_tty()
+    if terminal_pid:
+        cmd += ["--terminal-pid", str(terminal_pid)]
 
     try:
         import subprocess
@@ -391,21 +516,21 @@ def main():
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <event>", file=sys.stderr)
         print("Events: notification, stop, working, pre_tool, post_tool, idle, off", file=sys.stderr)
-        print("        touch_listen [--timeout N] [--tty /dev/pts/N]", file=sys.stderr)
+        print("        touch_listen [--timeout N] [--terminal-pid N]", file=sys.stderr)
         sys.exit(1)
 
     event = sys.argv[1]
 
     if event == "touch_listen":
         timeout = 30
-        tty = None
+        terminal_pid = None
         if "--timeout" in sys.argv:
             idx = sys.argv.index("--timeout")
             timeout = int(sys.argv[idx + 1])
-        if "--tty" in sys.argv:
-            idx = sys.argv.index("--tty")
-            tty = sys.argv[idx + 1]
-        touch_listen(timeout_s=timeout, tty=tty)
+        if "--terminal-pid" in sys.argv:
+            idx = sys.argv.index("--terminal-pid")
+            terminal_pid = int(sys.argv[idx + 1])
+        touch_listen(timeout_s=timeout, terminal_pid=terminal_pid)
         return
 
     # "off" is a built-in alias that always turns the light off
