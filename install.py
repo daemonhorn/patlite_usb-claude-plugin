@@ -274,11 +274,44 @@ def update_settings() -> None:
 
 # ── device test ────────────────────────────────────────────────────────────
 
-def test_device() -> None:
-    print_step("Testing Patlite device")
+def _get_hid():
+    """Return a hid-compatible object (pip 'hid' or Debian 'hidapi' shim), or None."""
     try:
         import hid
+        return hid
     except ImportError:
+        pass
+    try:
+        import hidapi as _lib
+
+        class _Facade:
+            def enumerate(self_):
+                return [{"vendor_id": d.vendor_id, "product_id": d.product_id,
+                         "manufacturer_string": d.manufacturer_string or "",
+                         "product_string": d.product_string or ""}
+                        for d in _lib.enumerate()]
+
+            def device(self_):
+                class _Dev:
+                    def __init__(self__): self__._d = None
+                    def open(self__, v, p): self__._d = _lib.Device(vendor_id=v, product_id=p)
+                    def write(self__, data): self__._d.write(bytes(data[1:]), report_id=bytes([data[0]]))
+                    def read(self__, n, timeout_ms=0):
+                        r = self__._d.read(n, timeout_ms=timeout_ms)
+                        return list(r) if r is not None else []
+                    def close(self__):
+                        if self__._d: self__._d.close(); self__._d = None
+                return _Dev()
+
+        return _Facade()
+    except ImportError:
+        return None
+
+
+def test_device() -> None:
+    print_step("Testing Patlite device")
+    hid = _get_hid()
+    if hid is None:
         print_warn("hidapi not importable — re-run the installer or install manually:")
         print_warn("  Debian/Ubuntu: sudo apt install python3-hidapi")
         print_warn("  Other:         pip install hidapi")

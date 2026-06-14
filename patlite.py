@@ -46,6 +46,69 @@ _GETSTATE_CMD = [0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
 _LOCK_FILE = os.path.join(tempfile.gettempdir(), "patlite_touch_listen.pid")
 
 
+# ── HID compatibility layer ──────────────────────────────────────────────────
+# pip 'hidapi' installs as module 'hid'; Debian's python3-hidapi installs as
+# module 'hidapi' with a different API.  _get_hid() normalises both so the
+# rest of the code uses a single interface.
+
+def _get_hid():
+    """Return a hid-compatible object, or None if no HID library is available."""
+    try:
+        import hid
+        return hid
+    except ImportError:
+        pass
+    try:
+        import hidapi as _lib
+        return _HidapiFacade(_lib)
+    except ImportError:
+        return None
+
+
+class _HidapiFacade:
+    """Adapts Debian's python3-hidapi (cffi) to match the pip 'hid' package API."""
+    def __init__(self, lib):
+        self._lib = lib
+
+    def enumerate(self):
+        return [
+            {
+                "vendor_id": d.vendor_id,
+                "product_id": d.product_id,
+                "manufacturer_string": d.manufacturer_string or "",
+                "product_string": d.product_string or "",
+            }
+            for d in self._lib.enumerate()
+        ]
+
+    def device(self):
+        return _HidapiDeviceFacade(self._lib)
+
+
+class _HidapiDeviceFacade:
+    """Wraps hidapi.Device to match hid.device() open/write/read/close semantics."""
+    def __init__(self, lib):
+        self._lib = lib
+        self._dev = None
+
+    def open(self, vid, pid):
+        self._dev = self._lib.Device(vendor_id=vid, product_id=pid)
+
+    def write(self, data):
+        # pip hid: data[0] is the report_id, data[1:] is the payload.
+        # Debian hidapi: write(payload_bytes, report_id=bytes([rid])).
+        self._dev.write(bytes(data[1:]), report_id=bytes([data[0]]))
+
+    def read(self, size, timeout_ms=0):
+        result = self._dev.read(size, timeout_ms=timeout_ms)
+        return list(result) if result is not None else []
+
+    def close(self):
+        if self._dev is not None:
+            self._dev.close()
+            self._dev = None
+
+
 def load_config():
     try:
         import yaml
@@ -64,7 +127,7 @@ def build_led_byte(color_name, pattern_name) -> int:
 
 def _open_device(config):
     """Open and return the HID device, resolving PID from config or auto-detect."""
-    import hid
+    hid = _get_hid()
     device_cfg = config.get("device", {})
     vid_raw = device_cfg.get("vid", VENDOR_ID)
     vid = int(str(vid_raw), 16) if isinstance(vid_raw, str) else vid_raw
@@ -97,9 +160,7 @@ def send_signal(event: str) -> None:
     pattern = event_cfg.get("pattern", "off")
     led_byte = build_led_byte(color, pattern)
 
-    try:
-        import hid
-    except ImportError:
+    if _get_hid() is None:
         print("patlite: hidapi not installed.", file=sys.stderr)
         print("  Debian/Ubuntu: sudo apt install python3-hidapi", file=sys.stderr)
         print("  Other:         pip install hidapi", file=sys.stderr)
@@ -184,9 +245,7 @@ def touch_listen(timeout_s: int = 30) -> None:
     if not _acquire_lock():
         return
 
-    try:
-        import hid
-    except ImportError:
+    if _get_hid() is None:
         _release_lock()
         return
 
@@ -278,13 +337,14 @@ def main():
             cfg.setdefault("events", {})["off"] = {"color": "off", "pattern": "off"}
         except Exception:
             pass
-        import hid
-        found = [d for d in hid.enumerate() if d["vendor_id"] == VENDOR_ID]
-        if found:
-            dev = hid.device()
-            dev.open(VENDOR_ID, found[0]["product_id"])
-            dev.write([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-            dev.close()
+        hid = _get_hid()
+        if hid is not None:
+            found = [d for d in hid.enumerate() if d["vendor_id"] == VENDOR_ID]
+            if found:
+                dev = hid.device()
+                dev.open(VENDOR_ID, found[0]["product_id"])
+                dev.write([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+                dev.close()
         return
 
     send_signal(event)
