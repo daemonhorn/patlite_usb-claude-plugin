@@ -44,6 +44,8 @@ _GETSTATE_CMD = [0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
 
 # Lock file prevents multiple simultaneous touch listeners.
 _LOCK_FILE = os.path.join(tempfile.gettempdir(), "patlite_touch_listen.pid")
+# Cancel sentinel: written by any hook event that means "the prompt is gone".
+_CANCEL_FILE = os.path.join(tempfile.gettempdir(), "patlite_touch_cancel")
 
 
 # ── HID compatibility layer ──────────────────────────────────────────────────
@@ -178,6 +180,8 @@ def send_signal(event: str) -> None:
 
     if event == "notification":
         _spawn_touch_listener(config)
+    else:
+        _cancel_listen()
 
 
 # ── touch sensor ────────────────────────────────────────────────────────────
@@ -220,7 +224,59 @@ def _release_lock():
         pass
 
 
-def _inject_enter():
+def _cancel_listen() -> None:
+    """Signal the running touch listener to stop — prompt was dismissed."""
+    try:
+        open(_CANCEL_FILE, "w").close()
+    except OSError:
+        pass
+
+
+def _check_cancelled() -> bool:
+    return os.path.exists(_CANCEL_FILE)
+
+
+def _find_controlling_tty() -> "str | None":
+    """Walk up the Linux /proc process tree to find the first ancestor with a PTY stdin."""
+    pid = os.getpid()
+    seen: set = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/0")
+            if target.startswith("/dev/pts/") or target.startswith("/dev/tty"):
+                return target
+        except OSError:
+            pass
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        pid = int(line.split()[1])
+                        break
+                else:
+                    break
+        except OSError:
+            break
+    return None
+
+
+def _inject_enter(tty: "str | None" = None) -> None:
+    # Preferred path: write '\n' directly to Claude Code's PTY via TIOCSTI.
+    # This targets the correct terminal regardless of window focus and works
+    # under both X11 and Wayland.  TIOCSTI is restricted on Linux ≥ 6.2 by
+    # default; we fall through silently if it fails.
+    if tty and sys.platform == "linux":
+        try:
+            import fcntl
+            fd = os.open(tty, os.O_RDWR | os.O_NOCTTY)
+            fcntl.ioctl(fd, 0x5412, b"\n")  # 0x5412 = TIOCSTI
+            os.close(fd)
+            return
+        except OSError:
+            pass
+
+    # Fallback: system-wide pynput injection (goes to whatever window is focused).
     try:
         from pynput.keyboard import Key, Controller
         kb = Controller()
@@ -236,11 +292,12 @@ def _inject_enter():
         sys.exit(1)
 
 
-def touch_listen(timeout_s: int = 30) -> None:
+def touch_listen(timeout_s: int = 30, tty: "str | None" = None) -> None:
     """
     Poll for touch sensor input and inject Enter when detected.
     Spawned as a detached background process by the notification handler.
     Single-instance: exits immediately if another listener is already running.
+    Exits early if another hook fires (cancel sentinel written by send_signal).
     """
     if not _acquire_lock():
         return
@@ -257,6 +314,9 @@ def touch_listen(timeout_s: int = 30) -> None:
         last_touched = False
 
         while time.monotonic() < deadline:
+            if _check_cancelled():
+                return
+
             dev.write(_GETSTATE_CMD)
             resp = dev.read(8, timeout_ms=200)
             touched = bool(resp and len(resp) > 1 and (resp[1] & 1))
@@ -265,7 +325,7 @@ def touch_listen(timeout_s: int = 30) -> None:
                 # Rising edge — close device before injecting so LED writes can reopen it
                 dev.close()
                 dev = None
-                _inject_enter()
+                _inject_enter(tty)
                 return
 
             last_touched = touched
@@ -279,6 +339,10 @@ def touch_listen(timeout_s: int = 30) -> None:
                 dev.close()
             except Exception:
                 pass
+        try:
+            os.unlink(_CANCEL_FILE)
+        except OSError:
+            pass
         _release_lock()
 
 
@@ -289,8 +353,21 @@ def _spawn_touch_listener(config: dict) -> None:
         return
     timeout = int(touch_cfg.get("approval_timeout", 30))
 
+    # Clear any stale cancel sentinel from the previous notification cycle.
+    try:
+        os.unlink(_CANCEL_FILE)
+    except OSError:
+        pass
+
     script = os.path.abspath(__file__)
     cmd = [sys.executable, script, "touch_listen", "--timeout", str(timeout)]
+
+    # Find the Claude Code terminal's PTY now (while still in the hook process
+    # tree) and pass it to the detached listener for direct input injection.
+    if sys.platform == "linux":
+        tty = _find_controlling_tty()
+        if tty:
+            cmd += ["--tty", tty]
 
     try:
         import subprocess
@@ -314,17 +391,21 @@ def main():
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <event>", file=sys.stderr)
         print("Events: notification, stop, working, pre_tool, post_tool, idle, off", file=sys.stderr)
-        print("        touch_listen [--timeout N]", file=sys.stderr)
+        print("        touch_listen [--timeout N] [--tty /dev/pts/N]", file=sys.stderr)
         sys.exit(1)
 
     event = sys.argv[1]
 
     if event == "touch_listen":
         timeout = 30
+        tty = None
         if "--timeout" in sys.argv:
             idx = sys.argv.index("--timeout")
             timeout = int(sys.argv[idx + 1])
-        touch_listen(timeout_s=timeout)
+        if "--tty" in sys.argv:
+            idx = sys.argv.index("--tty")
+            tty = sys.argv[idx + 1]
+        touch_listen(timeout_s=timeout, tty=tty)
         return
 
     # "off" is a built-in alias that always turns the light off
@@ -337,6 +418,7 @@ def main():
             cfg.setdefault("events", {})["off"] = {"color": "off", "pattern": "off"}
         except Exception:
             pass
+        _cancel_listen()
         hid = _get_hid()
         if hid is not None:
             found = [d for d in hid.enumerate() if d["vendor_id"] == VENDOR_ID]
