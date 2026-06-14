@@ -81,6 +81,41 @@ Removes all hooks from `~/.claude/settings.json` and deletes `~/.claude/plugins/
 
 ---
 
+## Touch sensor (NE-WT-USB / NE-ST-USB)
+
+Models with a **T** in the name have a capacitive touch sensor on the body. When Claude Code shows a permission prompt (e.g., "allow this bash command?"), the tower flashes amber. Touching the sensor injects **Enter** to confirm the highlighted option — no keyboard required.
+
+### How it works
+
+1. Claude Code fires the `Notification` hook
+2. `patlite.py` sets the amber-flash LED, then spawns a detached background listener
+3. The listener polls the touch sensor via USB every 100 ms for up to `approval_timeout` seconds
+4. When touch is detected, it releases the HID device and injects an Enter keystroke into the focused window
+5. Only one listener runs at a time (PID lock file in `%TEMP%`)
+
+### Caveats
+
+- The Enter keystroke goes to whatever window is focused. If you touch the sensor while a different app is in the foreground, Enter goes there instead. Touch only when you see the amber flash.
+- The listener starts on every `Notification` event, not only permission prompts. If the notification was informational (no dialog), the listener times out and exits without doing anything.
+
+### Configuration
+
+```yaml
+touch:
+  enabled: true            # set to false to disable on non-T models
+  approval_timeout: 30     # seconds to wait for touch after each notification
+```
+
+### Dependencies
+
+The touch feature requires `pynput` for cross-platform keystroke injection:
+
+```bash
+pip install pynput
+```
+
+---
+
 ## Default event mapping
 
 | Claude Code event | Light | Meaning |
@@ -251,6 +286,11 @@ The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patl
 
 **Too many flickers during tool-heavy responses**
 - Disable `pre_tool`/`post_tool` by setting both to `color: "off"` in `config.yaml`
+
+**Touch sensor doesn't inject Enter / `pynput` error in logs**
+- Run `pip install pynput` and confirm `python -c "from pynput.keyboard import Key, Controller"` succeeds
+- On Linux with Wayland: `pynput` may not work — use X11 or set `touch.enabled: false` in `config.yaml`
+- Confirm the Claude Code terminal window is focused when you touch the sensor
 
 **Wrong Python used by hooks**
 - Re-run `python install.py --uninstall` then `python install.py` with the correct Python interpreter

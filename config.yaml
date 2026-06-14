@@ -38,3 +38,11 @@ events:
   idle:
     color: "off"
     pattern: "off"
+
+# Touch sensor (NE-WT-USB / NE-ST-USB models only)
+# When a Notification fires, a background listener waits for a touch event
+# and injects Enter to confirm the highlighted option in Claude Code's
+# permission prompt.
+touch:
+  enabled: true
+  approval_timeout: 30   # seconds to wait for touch after each notification
