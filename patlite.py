@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Patlite NE-WT-USB controller for Claude Code hooks.
+Patlite NE-USB controller for Claude Code hooks.
 Usage: python patlite.py <event>
 Events: notification, stop, working, pre_tool, post_tool, idle, off
         touch_listen [--timeout N]   (background touch-to-approve daemon)
@@ -36,6 +36,21 @@ PATTERNS = {
     "pulse2": 0x5,
     "pulse3": 0x6,
     "pulse4": 0x7,
+}
+
+# Buzzer byte 3: bits[7:4] = repeat count (0=continuous, 1-14=N times, 0xF=keep)
+#                bits[3:0] = sound pattern
+# Buzzer byte 4: 0x0=mute, 0x1-0xA=volume steps, 0xF=keep current
+BUZZER_PATTERNS = {
+    "off":          0x0,
+    "continuous":   0x1,
+    "sweep":        0x2,
+    "intermittent": 0x3,
+    "weak":         0x4,
+    "strong":       0x5,
+    "star":         0x6,
+    "london":       0x7,
+    "keep":         0xF,
 }
 
 # GETSTATE command: asks the device to report current touch sensor state.
@@ -127,6 +142,36 @@ def build_led_byte(color_name, pattern_name) -> int:
     return (color << 4) | pattern
 
 
+def build_buzzer_bytes(buzzer_name, volume) -> "tuple[int, int]":
+    """
+    Return (byte3, byte4) for the HID buzzer fields.
+
+    byte3: (repeat << 4) | pattern  — repeat=0 means continuous; 0xFF = keep all
+    byte4: 0x0=mute, 0x1–0xA=volume levels, 0xF=keep current
+    """
+    pat = BUZZER_PATTERNS.get(str(buzzer_name).lower(), 0xF)
+
+    if pat == 0xF:              # "keep" — don't touch buzzer state
+        bz_byte = 0xFF
+        vol_byte = 0x0F
+    elif pat == 0x0:            # "off" — silence, preserve volume
+        bz_byte = 0x00
+        vol_byte = 0x0F
+    else:                       # active pattern, repeat=0 (continuous)
+        bz_byte = pat           # (0x0 << 4) | pat
+        if volume is None or str(volume).lower() == "keep":
+            vol_byte = 0x0F
+        elif str(volume).lower() == "off":
+            vol_byte = 0x00
+        else:
+            try:
+                vol_byte = max(0, min(10, int(volume)))
+            except (ValueError, TypeError):
+                vol_byte = 0x0F
+
+    return bz_byte, vol_byte
+
+
 def _open_device(config):
     """Open and return the HID device, resolving PID from config or auto-detect."""
     hid = _get_hid()
@@ -161,6 +206,10 @@ def send_signal(event: str) -> None:
     color = event_cfg.get("color", "off")
     pattern = event_cfg.get("pattern", "off")
     led_byte = build_led_byte(color, pattern)
+    bz_byte, vol_byte = build_buzzer_bytes(
+        event_cfg.get("buzzer", "keep"),
+        event_cfg.get("volume", "keep"),
+    )
 
     if _get_hid() is None:
         print("patlite: hidapi not installed.", file=sys.stderr)
@@ -170,9 +219,7 @@ def send_signal(event: str) -> None:
 
     try:
         dev = _open_device(config)
-        # HID report: [report_id=0x00] + 8 data bytes
-        # buzzer 0xFF = keep current; 0x0F volume = keep current
-        dev.write([0x00, 0x00, 0x00, 0xFF, 0x0F, led_byte, 0x00, 0x00, 0x00])
+        dev.write([0x00, 0x00, 0x00, bz_byte, vol_byte, led_byte, 0x00, 0x00, 0x00])
         dev.close()
     except Exception as e:
         print(f"patlite: device error: {e}", file=sys.stderr)
