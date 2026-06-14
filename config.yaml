@@ -3,7 +3,7 @@
 
 device:
   vid: 0x191A   # Patlite vendor ID
-  pid: null     # null = auto-detect first Patlite device
+  pid: 0x6001   # NE-WT-USB product ID — set to null to auto-detect any Patlite device
 
 # Event -> signal mapping
 # Colors: red, amber, yellow, green, blue, cyan, purple, white, off

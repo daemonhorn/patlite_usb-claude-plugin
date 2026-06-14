@@ -29,6 +29,7 @@ HOOK_EVENTS = {
     "UserPromptSubmit": "working",
     "PreToolUse": "pre_tool",
     "PostToolUse": "post_tool",
+    "SessionEnd": "idle",
 }
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -268,7 +269,7 @@ def uninstall() -> None:
 
         hooks = settings.get("hooks", {})
         removed = 0
-        for event in list(HOOK_EVENTS.keys()):
+        for event in list(HOOK_EVENTS):
             entries = hooks.get(event, [])
             before = len(entries)
             entries[:] = [

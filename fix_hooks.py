@@ -21,6 +21,7 @@ HOOK_EVENTS = {
     "UserPromptSubmit": "working",
     "PreToolUse": "pre_tool",
     "PostToolUse": "post_tool",
+    "SessionEnd": "idle",
 }
 
 

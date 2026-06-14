@@ -9,11 +9,13 @@ Any Patlite NE-USB series device (VID `0x191A`, PID `0x6001`):
 | Model | Colors | Sound |
 |-------|--------|-------|
 | NE-WT-USB | Multicolor LED | No |
-| NE-SN-USB | Multicolor LED | Yes (buzzer) |
+| NE-SN-USB | Multicolor LED | Has buzzer hardware (not yet supported by this plugin) |
 | NE-ST-USB | Multicolor LED | No |
 | NE-WN-USB | Multicolor LED | No |
 
 > **Note:** The available colors on your specific unit depend on its LED configuration. Experiment with colors in `config.yaml` — unsupported ones silently fall back to the closest available color.
+>
+> **Sound:** Buzzer control (bytes 2–3 in the HID report) is not yet implemented. The plugin always sends `0xFF 0x0F` (keep current) for those bytes. A future `buzzer:` config field could enable this for NE-SN-USB owners.
 
 ---
 
@@ -88,6 +90,7 @@ Removes all hooks from `~/.claude/settings.json` and deletes `~/.claude/plugins/
 | `PostToolUse` | 🔵 Blue solid | Tool done, Claude still working |
 | `Stop` | 🟢 Green solid | Claude finished — come check |
 | `Notification` | 🟡 Amber flash | Claude needs your attention |
+| `SessionEnd` | ⚫ Off | Session exited — light clears automatically |
 
 ---
 
@@ -98,7 +101,7 @@ Edit `~/.claude/plugins/patlite/config.yaml` to customize behavior. Changes take
 ```yaml
 device:
   vid: 0x191A   # Patlite vendor ID — do not change
-  pid: null     # null = auto-detect; set to e.g. 0x6001 to pin a specific device
+  pid: 0x6001   # NE-WT-USB product ID — set to null to auto-detect any Patlite device
 
 events:
   notification:
@@ -212,6 +215,7 @@ The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patl
 | `PostToolUse` | After any tool call |
 | `Stop` | Claude finishes generating |
 | `Notification` | Claude sends a system notification |
+| `SessionEnd` | Claude Code session exits (turns light off) |
 
 ---
 
@@ -236,6 +240,11 @@ The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patl
 **`ImportError: hidapi`**
 - Run `pip install hidapi` and retry
 - Verify: `python -c "import hid; print('ok')"`
+
+**`hidapi` import fails even after installing it**
+- There are two conflicting packages that both use `import hid`: the ctypes-based `hid` package and the Cython-based `hidapi` package. If you have both installed, whichever was installed last wins, and the other's DLL may not load.
+- Fix: `pip uninstall hid` — then only `hidapi` remains.
+- Check which you have: `pip list | grep -i hid`
 
 **Light stuck on a color**
 - Run: `python ~/.claude/plugins/patlite/patlite.py off`
