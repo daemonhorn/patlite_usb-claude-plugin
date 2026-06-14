@@ -1,21 +1,23 @@
 # patlite_usb-claude-plugin
 
-Physical feedback for Claude Code via a [Patlite NE-USB](https://www.patlite.com/product/detail0000000762.html) signal tower. Lights up with different colors and patterns for each Claude Code lifecycle event — so you know at a glance whether Claude is working, done, or waiting for your attention.
+Physical feedback for Claude Code via a [Patlite NE-USB](https://www.patlite.com/product/detail0000000762.html) signal tower. Lights up with different colors and patterns for each Claude Code lifecycle event — so you know at a glance whether Claude is working, done, or waiting for your attention. Optionally plays a configurable buzzer sound for any event.
 
 ## Supported devices
 
-Any Patlite NE-USB series device (VID `0x191A`, PID `0x6001`):
+All NE-USB series models share the same USB VID/PID and the same HID protocol:
 
-| Model | Colors | Sound |
-|-------|--------|-------|
-| NE-WT-USB | Multicolor LED | No |
-| NE-SN-USB | Multicolor LED | Has buzzer hardware (not yet supported by this plugin) |
-| NE-ST-USB | Multicolor LED | No |
-| NE-WN-USB | Multicolor LED | No |
+| Model | Colors | Touch sensor | Buzzer |
+|-------|--------|-------------|--------|
+| NE-WT-USB | Multicolor LED | Yes | Yes |
+| NE-WN-USB | Multicolor LED | No  | Yes |
+| NE-ST-USB | Multicolor LED | Yes | Yes |
+| NE-SN-USB | Multicolor LED | No  | Yes |
+
+VID: `0x191A` / PID: `0x6001` (all models)
 
 > **Note:** The available colors on your specific unit depend on its LED configuration. Experiment with colors in `config.yaml` — unsupported ones silently fall back to the closest available color.
->
-> **Sound:** Buzzer control (bytes 2–3 in the HID report) is not yet implemented. The plugin always sends `0xFF 0x0F` (keep current) for those bytes. A future `buzzer:` config field could enable this for NE-SN-USB owners.
+
+Protocol reference: [PATLITE-Corporation/NE-USB\_linux\_python\_example](https://github.com/PATLITE-Corporation/NE-USB_linux_python_example)
 
 ---
 
@@ -167,6 +169,8 @@ pip install pynput
 | `Notification` | 🟡 Amber flash | Claude needs your attention |
 | `SessionEnd` | ⚫ Off | Session exited — light clears automatically |
 
+Sound is **off** by default for all events. Enable it per-event in `config.yaml`.
+
 ---
 
 ## Configuration
@@ -176,32 +180,44 @@ Edit `~/.claude/plugins/patlite/config.yaml` to customize behavior. Changes take
 ```yaml
 device:
   vid: 0x191A   # Patlite vendor ID — do not change
-  pid: 0x6001   # NE-WT-USB product ID — set to null to auto-detect any Patlite device
+  pid: 0x6001   # NE-USB product ID (shared across all NE-USB models)
 
 events:
   notification:
     color: amber
     pattern: flash
+    buzzer: "off"    # silent by default
+    volume: keep
 
   stop:
     color: green
     pattern: solid
+    buzzer: "off"
+    volume: keep
 
   working:
     color: blue
     pattern: solid
+    buzzer: "off"
+    volume: keep
 
   pre_tool:
     color: cyan
     pattern: pulse
+    buzzer: "off"
+    volume: keep
 
   post_tool:
     color: blue
     pattern: solid
+    buzzer: "off"
+    volume: keep
 
   idle:
     color: "off"
     pattern: "off"
+    buzzer: "off"
+    volume: keep
 ```
 
 ### Colors
@@ -230,6 +246,47 @@ events:
 | `pulse2` – `pulse4` | Pulse variants |
 | `"off"` | Off |
 
+### Buzzer sounds
+
+All NE-USB models include a buzzer. Set `buzzer:` per event to any of these values:
+
+| Value | Sound |
+|-------|-------|
+| `"off"` | Silence — stops any playing sound |
+| `continuous` | Steady tone |
+| `sweep` | Rising/falling sweep |
+| `intermittent` | Short repeating beeps |
+| `weak` | Soft caution chime |
+| `strong` | Loud attention chime |
+| `star` | Shining-star melody |
+| `london` | London Bridge melody |
+| `keep` | Leave buzzer in its current state (default) |
+
+> **Important:** Use `"off"` in quotes — bare `off` is parsed as boolean `False` by YAML.
+
+### Volume
+
+Set `volume:` to control playback level when an active buzzer pattern is selected:
+
+| Value | Meaning |
+|-------|---------|
+| `1` – `10` | Volume steps (1 = quiet, 10 = loudest) |
+| `"off"` | Mute (play pattern silently — useful to stop a loop without the noise) |
+| `keep` | Leave volume at its current hardware setting |
+
+`volume` is only applied when `buzzer` is an active pattern. If `buzzer` is `"off"` or `keep`, `volume` is ignored.
+
+**Example — play a chime when Claude finishes:**
+
+```yaml
+events:
+  stop:
+    color: green
+    pattern: solid
+    buzzer: strong
+    volume: 5
+```
+
 ### Disabling an event
 
 Set both fields to `"off"` for any event you don't want to trigger the light:
@@ -239,6 +296,8 @@ events:
   pre_tool:
     color: "off"
     pattern: "off"
+    buzzer: "off"
+    volume: keep
 ```
 
 ---
@@ -257,7 +316,7 @@ python patlite.py <event>
 
 Available events: `notification`, `stop`, `working`, `pre_tool`, `post_tool`, `idle`, `off`
 
-The `off` argument always turns the light off regardless of config.
+The `off` argument always turns the light off and silences the buzzer regardless of config.
 
 ---
 
@@ -271,13 +330,16 @@ The Patlite NE-USB is a USB HID class device (no custom driver required). The pl
 Byte 0:  Report ID       = 0x00
 Byte 1:  Command version = 0x00
 Byte 2:  Command ID      = 0x00 (LED/buzzer control)
-Byte 3:  Buzzer control  = 0xFF (keep current)
-Byte 4:  Buzzer volume   = 0x0F (keep current)
+Byte 3:  Buzzer control  = (repeat << 4) | pattern
+           0x00 = off/silence
+           0x01–0x07 = continuous play of pattern 1–7
+           0xFF = keep current state
+Byte 4:  Buzzer volume   = 0x00 (mute) .. 0x0A (max) .. 0x0F (keep current)
 Byte 5:  LED control     = (color_nibble << 4) | pattern_nibble
 Bytes 6–8: Padding       = 0x00
 ```
 
-Source: [PATLITE-Corporation/NE-USB_linux_python_example](https://github.com/PATLITE-Corporation/NE-USB_linux_python_example)
+Source: [PATLITE-Corporation/NE-USB\_linux\_python\_example](https://github.com/PATLITE-Corporation/NE-USB_linux_python_example)
 
 ### Claude Code hooks
 
@@ -332,6 +394,9 @@ Or install `python3-venv` and re-run `python3 install.py` to let the installer c
 
 **Light stuck on a color**
 - Run: `python ~/.claude/plugins/patlite/patlite.py off`
+
+**Buzzer keeps playing after Claude finishes**
+- The `keep` buzzer value (default) leaves whatever the device is doing. If a previous event started the buzzer, set a later event's `buzzer: "off"` to stop it. For example, setting `stop.buzzer: "off"` will silence the buzzer whenever Claude finishes.
 
 **Too many flickers during tool-heavy responses**
 - Disable `pre_tool`/`post_tool` by setting both to `color: "off"` in `config.yaml`
