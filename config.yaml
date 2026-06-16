@@ -1,14 +1,23 @@
-# Patlite NE-USB configuration for Claude Code hooks
+# Claude Code USB light plugin — configuration
 # Edit this file to customize event -> light and sound signal mappings.
 #
-# All NE-USB models share VID 0x191A / PID 0x6001.
-# Models: NE-WT-USB, NE-WN-USB, NE-ST-USB, NE-SN-USB
-# Protocol reference: https://github.com/PATLITE-Corporation/NE-USB_linux_python_example
+# Set driver to match your hardware; vid/pid are auto-detected from the driver
+# and can be omitted unless you have a non-standard or clone device.
+#
+# Supported drivers and their default VID/PID:
+#   patlite — Patlite NE-USB signal tower    VID 0x191A / PID 0x6001
+#              Models: NE-WT-USB, NE-WN-USB, NE-ST-USB, NE-SN-USB
+#   luxafor  — Luxafor Flag / Orb / Mute     VID 0x04D8 / PID 0xF372
+#   blink1   — ThingM blink(1) mk1/mk2/mk3   VID 0x27B8 / PID 0x01ED
 
 device:
   driver: patlite  # Options: patlite | luxafor | blink1
-  vid: 0x191A      # Patlite vendor ID (omit to use driver default)
-  pid: 0x6001      # NE-USB product ID (omit to use driver default)
+  # vid: 0x191A   # Uncomment to override VID (patlite default)
+  # vid: 0x04D8   # Uncomment to override VID (luxafor default)
+  # vid: 0x27B8   # Uncomment to override VID (blink1 default)
+  # pid: 0x6001   # Uncomment to override PID (patlite default)
+  # pid: 0xF372   # Uncomment to override PID (luxafor default)
+  # pid: 0x01ED   # Uncomment to override PID (blink1 default)
 
 # Event -> signal mapping
 #
@@ -76,5 +85,5 @@ events:
 # and injects Enter to confirm the highlighted option in Claude Code's
 # permission prompt.
 touch:
-  enabled: true
+  enabled: false         # set true only for Patlite NE-WT-USB / NE-ST-USB (touch sensor models)
   approval_timeout: 30   # seconds to wait for touch after each notification
