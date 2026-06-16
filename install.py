@@ -167,8 +167,9 @@ def install_files(detected_driver: "str | None" = None) -> None:
             print_warn(f"config.yaml already exists at {dst} — skipping (your settings preserved)")
             continue
         if fname == "config.yaml" and detected_driver and detected_driver != "patlite":
+            import re
             content = src.read_text()
-            content = content.replace("  driver: patlite", f"  driver: {detected_driver}")
+            content = re.sub(r'(\s+driver:\s*)patlite', lambda m: m.group(1) + detected_driver, content, count=1)
             dst.write_text(content)
             print_ok(f"Wrote config.yaml (driver: {detected_driver} — auto-detected)")
         else:
@@ -451,8 +452,13 @@ def uninstall() -> None:
 
     # Remove hooks from settings.json
     if SETTINGS_PATH.exists():
-        with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-            settings = json.load(f)
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                settings = json.load(f)
+        except json.JSONDecodeError as e:
+            print_err(f"settings.json is not valid JSON: {e}")
+            print_err("Fix the file manually, then re-run uninstall.")
+            sys.exit(1)
 
         hooks = settings.get("hooks", {})
         removed = 0

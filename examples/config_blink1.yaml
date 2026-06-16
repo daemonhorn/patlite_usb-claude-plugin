@@ -1,5 +1,5 @@
 # config.yaml for ThingM blink(1) mk1 / mk2 / mk3
-# Copy to ~/.claude/plugins/patlite/config.yaml
+# Copy to ~/.claude/plugins/usb_led/config.yaml
 #
 # Device: ThingM VID 0x27B8 / PID 0x01ED
 # Protocol reference: https://github.com/todbot/blink1

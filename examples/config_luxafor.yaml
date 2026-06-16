@@ -1,5 +1,5 @@
 # config.yaml for Luxafor Flag / Orb / Mute
-# Copy to ~/.claude/plugins/patlite/config.yaml
+# Copy to ~/.claude/plugins/usb_led/config.yaml
 #
 # Device: Greynut / Microchip VID 0x04D8 / PID 0xF372
 # Protocol reference: https://github.com/torvalds/linux/blob/master/drivers/hid/hid-led.c

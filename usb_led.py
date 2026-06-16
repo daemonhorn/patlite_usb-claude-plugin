@@ -267,7 +267,7 @@ def _blink1_is_mk2(dev) -> bool:
     try:
         dev.send_feature_report([0x01, 0x76, 0, 0, 0, 0, 0, 0])
         resp = dev.get_feature_report(0x01, 9)
-        if resp and len(resp) >= 5:
+        if resp and len(resp) >= 5 and 0x30 <= resp[3] <= 0x39:
             return (resp[3] - ord('0')) >= 2
     except Exception:
         pass
@@ -283,16 +283,23 @@ def _blink1_write_pattern(dev, is_mk2, ms, r, g, b, pos):
         dev.send_feature_report([0x01, 0x50, th, tl, r, g, b, pos])
 
 
+def _blink1_report(is_mk2: bool, *bytes_) -> list:
+    """Pad report to the correct size for the firmware: 8 bytes (mk1) or 9 bytes (mk2)."""
+    r = list(bytes_)
+    if is_mk2 and len(r) < 9:
+        r += [0] * (9 - len(r))
+    return r
+
+
 def _send_blink1(dev, color_name, pattern_name):
     r, g, b = RGB_COLORS.get(str(color_name).lower(), (0, 0, 0))
     pat = str(pattern_name).lower()
+    is_mk2 = _blink1_is_mk2(dev)
 
     if pat == "off" or str(color_name).lower() == "off":
-        dev.send_feature_report([0x01, 0x70, 0, 0, 0, 0, 0, 0])   # stop pattern
-        dev.send_feature_report([0x01, 0x6e, 0, 0, 0, 0, 0, 0])   # fade to off
+        dev.send_feature_report(_blink1_report(is_mk2, 0x01, 0x70, 0, 0, 0, 0, 0, 0))   # stop pattern
+        dev.send_feature_report(_blink1_report(is_mk2, 0x01, 0x6e, 0, 0, 0, 0, 0, 0))   # fade to off
         return
-
-    is_mk2 = _blink1_is_mk2(dev)
 
     if pat in ("flash", "flash2", "pulse", "pulse2", "pulse3", "pulse4"):
         # Write a 2-frame loop into pattern RAM (color on → off) and play it.
@@ -300,17 +307,18 @@ def _send_blink1(dev, color_name, pattern_name):
             "flash":  300, "flash2": 600,
             "pulse":  800, "pulse2": 600, "pulse3": 400, "pulse4": 300,
         }[pat]
-        _blink1_write_pattern(dev, is_mk2, ms, r, g, b, 0)         # frame 0: color
-        _blink1_write_pattern(dev, is_mk2, ms, 0, 0, 0, 1)         # frame 1: off
-        dev.send_feature_report([0x01, 0x70, 1, 0, 1, 0, 0, 0])    # play 0→1, infinite
+        _blink1_write_pattern(dev, is_mk2, ms, r, g, b, 0)                                # frame 0: color
+        _blink1_write_pattern(dev, is_mk2, ms, 0, 0, 0, 1)                                # frame 1: off
+        dev.send_feature_report(_blink1_report(is_mk2, 0x01, 0x70, 1, 0, 1, 0, 0, 0))    # play 0→1, infinite
     else:  # solid
-        dev.send_feature_report([0x01, 0x70, 0, 0, 0, 0, 0, 0])    # stop any pattern
-        dev.send_feature_report([0x01, 0x6e, r, g, b, 0, 0, 0])    # set color immediately
+        dev.send_feature_report(_blink1_report(is_mk2, 0x01, 0x70, 0, 0, 0, 0, 0, 0))    # stop any pattern
+        dev.send_feature_report(_blink1_report(is_mk2, 0x01, 0x6e, r, g, b, 0, 0, 0))    # set color immediately
 
 
 def _blink1_off(dev):
-    dev.send_feature_report([0x01, 0x70, 0, 0, 0, 0, 0, 0])    # stop pattern
-    dev.send_feature_report([0x01, 0x6e, 0, 0, 0, 0, 0, 0])    # fade to off
+    is_mk2 = _blink1_is_mk2(dev)
+    dev.send_feature_report(_blink1_report(is_mk2, 0x01, 0x70, 0, 0, 0, 0, 0, 0))    # stop pattern
+    dev.send_feature_report(_blink1_report(is_mk2, 0x01, 0x6e, 0, 0, 0, 0, 0, 0))    # fade to off
 
 
 # ── device open ──────────────────────────────────────────────────────────────
@@ -339,9 +347,15 @@ def _open_device(config):
     else:
         pid = _parse_vid_pid(pid_raw)
 
-    dev = hid.device()
-    dev.open(vid, pid)
-    return dev
+    for attempt in range(5):
+        try:
+            dev = hid.device()
+            dev.open(vid, pid)
+            return dev
+        except Exception:
+            if attempt == 4:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 # ── signal dispatch ──────────────────────────────────────────────────────────
@@ -674,7 +688,7 @@ def touch_listen(timeout_s: int = 30, terminal_pid: "int | None" = None) -> None
 def _spawn_touch_listener(config: dict) -> None:
     """Spawn touch_listen as a detached background process (fire-and-forget)."""
     touch_cfg = config.get("touch", {})
-    if not touch_cfg.get("enabled", True):
+    if not touch_cfg.get("enabled", False):
         return
     timeout = int(touch_cfg.get("approval_timeout", 30))
 

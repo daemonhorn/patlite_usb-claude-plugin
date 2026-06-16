@@ -10,10 +10,11 @@ patlite.py script name.
 
     python fix_hooks.py
 """
-import sys, os, json, shutil
+import sys, os, json, shutil, platform
 from pathlib import Path, PurePosixPath
 
 INSTALL_DIR = Path.home() / ".claude" / "plugins" / "usb_led"
+VENV_DIR = INSTALL_DIR / ".venv"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 HOOK_EVENTS = {
@@ -31,8 +32,17 @@ def as_posix(p: Path) -> str:
     return p.as_posix()
 
 
+def _get_python_exe() -> str:
+    """Return the Python that has the plugin's packages: venv if it exists, else sys.executable."""
+    is_windows = platform.system() == "Windows"
+    venv_python = VENV_DIR / ("Scripts/python.exe" if is_windows else "bin/python3")
+    if venv_python.exists():
+        return as_posix(venv_python)
+    return as_posix(Path(sys.executable))
+
+
 def make_hook(cmd_arg: str) -> dict:
-    python_exe = as_posix(Path(sys.executable))
+    python_exe = _get_python_exe()
     script = as_posix(INSTALL_DIR / "usb_led.py")
     return {
         "matcher": ".*",
