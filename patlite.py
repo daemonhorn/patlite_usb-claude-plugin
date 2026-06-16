@@ -137,15 +137,17 @@ class _HidapiDeviceFacade:
         self._dev.write(bytes(data[1:]), report_id=bytes([data[0]]))
 
     def send_feature_report(self, data):
-        # pip hid: data[0] is the report_id.
-        # Debian hidapi: send_feature_report(payload_bytes, report_id=bytes([rid])).
+        # pip hid: data[0] is the report_id, data[1:] is the payload.
+        # Debian hidapi cffi: report_id must be bytes of length 1 for buffer assignment.
         self._dev.send_feature_report(bytes(data[1:]), report_id=bytes([data[0]]))
 
     def get_feature_report(self, report_id, length):
-        # pip hid: (report_id_int, length).
-        # Debian hidapi: (length, report_id=bytes([rid])).
-        result = self._dev.get_feature_report(length, report_id=bytes([report_id]))
-        return list(result) if result is not None else []
+        # Debian hidapi: get_feature_report(report_id_bytes, length) -> bytes WITHOUT report_id.
+        # pip hid convention (what callers expect): result[0] == report_id.
+        result = self._dev.get_feature_report(bytes([report_id]), length)
+        if result is None:
+            return []
+        return [report_id] + list(result)
 
     def read(self, size, timeout_ms=0):
         result = self._dev.read(size, timeout_ms=timeout_ms)

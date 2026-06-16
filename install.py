@@ -167,23 +167,34 @@ def install_files() -> None:
 
 # ── udev rules (Linux) ─────────────────────────────────────────────────────
 
+_UDEV_RULES = (
+    '# Patlite NE-USB signal tower (VID 191A / PID 6001)\n'
+    'SUBSYSTEM=="usb",    ATTRS{idVendor}=="191a", ATTRS{idProduct}=="6001", MODE="0660", GROUP="plugdev"\n'
+    'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="191a", ATTRS{idProduct}=="6001", MODE="0660", GROUP="plugdev"\n'
+    '# Luxafor Flag / Orb / Mute (VID 04D8 / PID F372)\n'
+    'SUBSYSTEM=="usb",    ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f372", MODE="0660", GROUP="plugdev"\n'
+    'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f372", MODE="0660", GROUP="plugdev"\n'
+    '# ThingM blink(1) mk1/mk2/mk3 (VID 27B8 / PID 01ED)\n'
+    'SUBSYSTEM=="usb",    ATTRS{idVendor}=="27b8", ATTRS{idProduct}=="01ed", MODE="0660", GROUP="plugdev"\n'
+    'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="27b8", ATTRS{idProduct}=="01ed", MODE="0660", GROUP="plugdev"\n'
+)
+
+
 def install_udev() -> None:
     rules_path = Path("/etc/udev/rules.d/99-patlite.rules")
-    rules = (
-        '# Patlite NE-USB signal tower — allow current user group access\n'
-        'SUBSYSTEM=="usb", ATTRS{idVendor}=="191a", ATTRS{idProduct}=="6001", '
-        'MODE="0660", GROUP="plugdev"\n'
-        'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="191a", ATTRS{idProduct}=="6001", '
-        'MODE="0660", GROUP="plugdev"\n'
-    )
-    if rules_path.exists():
-        print_ok("udev rules already installed")
+    try:
+        current = rules_path.read_text() if rules_path.exists() else ""
+    except PermissionError:
+        current = ""
+
+    if current == _UDEV_RULES:
+        print_ok("udev rules already up to date")
         return
 
     try:
         import tempfile, subprocess as sp
         with tempfile.NamedTemporaryFile("w", suffix=".rules", delete=False) as f:
-            f.write(rules)
+            f.write(_UDEV_RULES)
             tmp = f.name
         result = sp.run(["sudo", "cp", tmp, str(rules_path)], capture_output=True)
         os.unlink(tmp)
@@ -197,7 +208,7 @@ def install_udev() -> None:
         print_warn(f"Could not install udev rules automatically: {e}")
         print_warn("Manually create /etc/udev/rules.d/99-patlite.rules with:")
         print()
-        print(rules)
+        print(_UDEV_RULES)
         print_warn("Then run: sudo udevadm control --reload-rules && sudo udevadm trigger")
 
 
