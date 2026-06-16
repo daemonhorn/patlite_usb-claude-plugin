@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """
-Repairs Patlite hooks in ~/.claude/settings.json.
+Repairs USB LED plugin hooks in ~/.claude/settings.json.
 
 Run this if the hook fires with a mangled path (common when hooks are
 added via the /hooks dialog on Windows, because bash eats backslashes
 in the command string). This script replaces backslash paths with
-forward-slash paths.
+forward-slash paths and migrates any hooks still pointing at the old
+patlite.py script name.
 
     python fix_hooks.py
 """
 import sys, os, json, shutil
 from pathlib import Path, PurePosixPath
 
-INSTALL_DIR = Path.home() / ".claude" / "plugins" / "patlite"
+INSTALL_DIR = Path.home() / ".claude" / "plugins" / "usb_led"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 HOOK_EVENTS = {
@@ -32,7 +33,7 @@ def as_posix(p: Path) -> str:
 
 def make_hook(cmd_arg: str) -> dict:
     python_exe = as_posix(Path(sys.executable))
-    script = as_posix(INSTALL_DIR / "patlite.py")
+    script = as_posix(INSTALL_DIR / "usb_led.py")
     return {
         "matcher": ".*",
         "hooks": [{"type": "command",
@@ -42,8 +43,11 @@ def make_hook(cmd_arg: str) -> dict:
     }
 
 
-def contains_patlite(entry: dict) -> bool:
-    return any("patlite" in h.get("command", "") for h in entry.get("hooks", []))
+def contains_plugin_hook(entry: dict) -> bool:
+    return any(
+        "usb_led" in h.get("command", "") or "patlite" in h.get("command", "")
+        for h in entry.get("hooks", [])
+    )
 
 
 def main():
@@ -57,10 +61,10 @@ def main():
     hooks = cfg.setdefault("hooks", {})
     removed = 0
 
-    # Strip ALL existing patlite hooks (bad and good)
+    # Strip ALL existing plugin hooks (bad and good)
     for event in list(HOOK_EVENTS):
         before = hooks.get(event, [])
-        after = [e for e in before if not contains_patlite(e)]
+        after = [e for e in before if not contains_plugin_hook(e)]
         removed += len(before) - len(after)
         if after:
             hooks[event] = after
@@ -79,7 +83,7 @@ def main():
 
     print(f"Fixed {removed} malformed hook(s).")
     print(f"Python executable : {as_posix(Path(sys.executable))}")
-    print(f"Plugin script     : {as_posix(INSTALL_DIR / 'patlite.py')}")
+    print(f"Plugin script     : {as_posix(INSTALL_DIR / 'usb_led.py')}")
     print(f"Backup saved to   : {backup}")
     print()
     print("Restart Claude Code to apply the new hooks.")

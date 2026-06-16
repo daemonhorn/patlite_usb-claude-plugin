@@ -228,7 +228,7 @@ def install_udev() -> None:
 def _make_hook_entry(event: str, cmd_arg: str) -> dict:
     # Use forward slashes so the command works correctly when run via bash on Windows.
     python_exe = _get_python_exe()
-    script_path = (INSTALL_DIR / "patlite.py").as_posix()
+    script_path = (INSTALL_DIR / "usb_led.py").as_posix()
     command = f"{python_exe} {script_path} {cmd_arg}"
     return {
         "matcher": ".*",
