@@ -22,7 +22,12 @@ PLUGIN_NAME = "patlite"
 INSTALL_DIR = Path.home() / ".claude" / "plugins" / PLUGIN_NAME
 VENV_DIR = INSTALL_DIR / ".venv"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
-VENDOR_ID = 0x191A
+
+DEVICE_FAMILIES = [
+    {"name": "Patlite NE-USB",        "driver": "patlite", "vid": 0x191A, "pid": 0x6001},
+    {"name": "Luxafor Flag/Orb/Mute", "driver": "luxafor", "vid": 0x04D8, "pid": 0xF372},
+    {"name": "ThingM blink(1)",       "driver": "blink1",  "vid": 0x27B8, "pid": 0x01ED},
+]
 
 HOOK_EVENTS = {
     "Notification": "notification",
@@ -307,6 +312,8 @@ def _get_hid():
                     def __init__(self__): self__._d = None
                     def open(self__, v, p): self__._d = _lib.Device(vendor_id=v, product_id=p)
                     def write(self__, data): self__._d.write(bytes(data[1:]), report_id=bytes([data[0]]))
+                    def send_feature_report(self__, data):
+                        self__._d.send_feature_report(bytes(data[1:]), report_id=bytes([data[0]]))
                     def read(self__, n, timeout_ms=0):
                         r = self__._d.read(n, timeout_ms=timeout_ms)
                         return list(r) if r is not None else []
@@ -319,8 +326,46 @@ def _get_hid():
         return None
 
 
+def _test_patlite(hid, vid, pid, label) -> None:
+    import time
+    dev = hid.device()
+    dev.open(vid, pid)
+    for led_byte in (0x21, 0x41, 0x00):   # green solid, blue solid, off
+        dev.write([0x00, 0x00, 0x00, 0xFF, 0x0F, led_byte, 0x00, 0x00, 0x00])
+        time.sleep(1)
+    dev.close()
+
+
+def _test_luxafor(hid, vid, pid, label) -> None:
+    import time
+    dev = hid.device()
+    dev.open(vid, pid)
+    for r, g, b in ((0, 200, 0), (0, 0, 255), (0, 0, 0)):   # green, blue, off
+        dev.write([0x00, 0x01, 0xFF, r, g, b, 0, 0, 0])
+        time.sleep(1)
+    dev.close()
+
+
+def _test_blink1(hid, vid, pid, label) -> None:
+    import time
+    dev = hid.device()
+    dev.open(vid, pid)
+    # Use fade_to_rgb ('n') — works on all mk versions, no pattern RAM needed
+    for r, g, b in ((0, 200, 0), (0, 0, 255), (0, 0, 0)):   # green, blue, off
+        dev.send_feature_report([0x01, 0x6e, r, g, b, 0, 0, 0])
+        time.sleep(1)
+    dev.close()
+
+
+_DRIVER_TESTS = {
+    "patlite": _test_patlite,
+    "luxafor":  _test_luxafor,
+    "blink1":   _test_blink1,
+}
+
+
 def test_device() -> None:
-    print_step("Testing Patlite device")
+    print_step("Testing connected devices")
     hid = _get_hid()
     if hid is None:
         print_warn("hidapi not importable — re-run the installer or install manually:")
@@ -328,31 +373,32 @@ def test_device() -> None:
         print_warn("  Other:         pip install hidapi")
         return
 
-    devices = [d for d in hid.enumerate() if d["vendor_id"] == VENDOR_ID]
-    if not devices:
-        print_warn("No Patlite device detected (VID=0x191A). Is it plugged in?")
-        print_warn("The hooks are installed — they will activate when the device is connected.")
-        return
+    all_devs = {(d["vendor_id"], d["product_id"]): d for d in hid.enumerate()}
+    found_any = False
 
-    d = devices[0]
-    print_ok(f"Device found: {d['manufacturer_string']} {d['product_string']} "
-             f"(VID={hex(d['vendor_id'])} PID={hex(d['product_id'])})")
+    for family in DEVICE_FAMILIES:
+        vid, pid, driver, label = family["vid"], family["pid"], family["driver"], family["name"]
+        match = all_devs.get((vid, pid))
+        if not match:
+            print_warn(f"{label}: not detected (VID={hex(vid)} PID={hex(pid)})")
+            continue
 
-    # Quick light test: cycle through a few colors
-    print("  Running light test (green → blue → off)…")
-    try:
-        import time
-        dev = hid.device()
-        dev.open(VENDOR_ID, d["product_id"])
-        for led_byte in (0x21, 0x41, 0x00):   # green solid, blue solid, off
-            dev.write([0x00, 0x00, 0x00, 0xFF, 0x0F, led_byte, 0x00, 0x00, 0x00])
-            time.sleep(1)
-        dev.close()
-        print_ok("Light test passed")
-    except Exception as e:
-        print_warn(f"Light test failed: {e}")
-        if IS_LINUX:
-            print_warn("On Linux you may need udev rules — re-run with: python install.py")
+        found_any = True
+        mfr = match.get("manufacturer_string", "") or ""
+        prod = match.get("product_string", "") or ""
+        print_ok(f"{label}: {mfr} {prod}".strip())
+        print(f"  Running light test (green → blue → off)…")
+        try:
+            _DRIVER_TESTS[driver](hid, vid, pid, label)
+            print_ok(f"{label}: light test passed")
+        except Exception as e:
+            print_warn(f"{label}: light test failed: {e}")
+            if IS_LINUX:
+                print_warn("On Linux you may need udev rules — re-run with: python install.py")
+
+    if not found_any:
+        print_warn("No supported devices detected. Is one plugged in?")
+        print_warn("The hooks are installed — they will activate when a device is connected.")
 
 
 # ── uninstall ──────────────────────────────────────────────────────────────
@@ -404,7 +450,7 @@ def main() -> None:
     args = parser.parse_args()
 
     print("╔══════════════════════════════════════════════╗")
-    print("║  Patlite NE-USB  ×  Claude Code  Installer  ║")
+    print("║   USB Signal Light  ×  Claude Code  Hooks   ║")
     print("╚══════════════════════════════════════════════╝")
 
     if args.uninstall:
