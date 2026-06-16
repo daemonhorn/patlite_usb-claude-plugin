@@ -1,6 +1,6 @@
-# patlite_usb-claude-plugin
+# usb_led-claude-plugin
 
-Physical feedback for Claude Code via a [Patlite NE-USB](https://www.patlite.com/product/detail0000000762.html) signal tower. Lights up with different colors and patterns for each Claude Code lifecycle event — so you know at a glance whether Claude is working, done, or waiting for your attention. Optionally plays a configurable buzzer sound for any event.
+Physical feedback for Claude Code via a USB LED / signal light. Lights up with different colors and patterns for each Claude Code lifecycle event — so you know at a glance whether Claude is working, done, or waiting for your attention. Supports [Patlite NE-USB](https://www.patlite.com/product/detail0000000762.html) signal towers, [Luxafor](https://luxafor.com/) Flag/Orb/Mute, and [ThingM blink(1)](https://blink1.thingm.com/) mk1/mk2/mk3.
 
 ## Supported devices
 
@@ -50,16 +50,17 @@ Flash and pulse patterns are implemented by writing a 2-frame loop into the devi
 ### Install
 
 ```bash
-git clone git@github.com:daemonhorn/patlite_usb-claude-plugin.git
-cd patlite_usb-claude-plugin
+git clone git@github.com:daemonhorn/usb_led-claude-plugin.git
+cd usb_led-claude-plugin
 python3 install.py
 ```
 
 The installer:
 1. Installs Python dependencies (see below for platform notes)
-2. Copies `patlite.py` and `config.yaml` to `~/.claude/plugins/patlite/`
-3. Adds hooks to `~/.claude/settings.json`
-4. Runs a quick light test (green → blue → off)
+2. Auto-detects your connected device and pre-fills `driver:` in `config.yaml`
+3. Copies `usb_led.py` and `config.yaml` to `~/.claude/plugins/usb_led/`
+4. Adds hooks to `~/.claude/settings.json`
+5. Runs a quick light test on every detected device (green → blue → off)
 
 ### Debian / Ubuntu
 
@@ -69,7 +70,7 @@ Debian 12+ and Ubuntu 23.04+ use a [PEP 668](https://peps.python.org/pep-0668/) 
 
 ```bash
 sudo apt install python3-venv   # needed once
-python3 install.py              # creates ~/.claude/plugins/patlite/.venv automatically
+python3 install.py              # creates ~/.claude/plugins/usb_led/.venv automatically
 ```
 
 The hooks are configured to call the virtualenv Python, so everything works transparently.
@@ -91,8 +92,15 @@ The installer will attempt to install a udev rule (requires `sudo`). If it fails
 
 ```bash
 sudo tee /etc/udev/rules.d/99-patlite.rules <<'EOF'
-SUBSYSTEM=="usb", ATTRS{idVendor}=="191a", ATTRS{idProduct}=="6001", MODE="0660", GROUP="plugdev"
+# Patlite NE-USB signal tower (VID 191A / PID 6001)
+SUBSYSTEM=="usb",    ATTRS{idVendor}=="191a", ATTRS{idProduct}=="6001", MODE="0660", GROUP="plugdev"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="191a", ATTRS{idProduct}=="6001", MODE="0660", GROUP="plugdev"
+# Luxafor Flag / Orb / Mute (VID 04D8 / PID F372)
+SUBSYSTEM=="usb",    ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f372", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="f372", MODE="0660", GROUP="plugdev"
+# ThingM blink(1) mk1/mk2/mk3 (VID 27B8 / PID 01ED)
+SUBSYSTEM=="usb",    ATTRS{idVendor}=="27b8", ATTRS{idProduct}=="01ed", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="27b8", ATTRS{idProduct}=="01ed", MODE="0660", GROUP="plugdev"
 EOF
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
@@ -119,7 +127,7 @@ Then restart Claude Code.
 python install.py --uninstall
 ```
 
-Removes all hooks from `~/.claude/settings.json` and deletes `~/.claude/plugins/patlite/`.
+Removes all hooks from `~/.claude/settings.json` and deletes `~/.claude/plugins/usb_led/`.
 
 ---
 
@@ -130,7 +138,7 @@ Models with a **T** in the name have a capacitive touch sensor on the body. When
 ### How it works
 
 1. Claude Code fires the `Notification` hook
-2. `patlite.py` sets the amber-flash LED, then spawns a detached background listener
+2. `usb_led.py` sets the amber-flash LED, then spawns a detached background listener
 3. The listener polls the touch sensor via USB every ~100 ms for up to `approval_timeout` seconds
 4. **Early exit:** any subsequent hook event (`PreToolUse`, `PostToolUse`, `Stop`, etc.) signals that the prompt was already answered — the listener exits immediately via a cancel sentinel file
 5. When touch is detected, the listener attempts to focus Claude Code's terminal window before injecting Enter (see [injection strategy](#keystroke-injection-strategy) below)
@@ -193,15 +201,16 @@ Sound is **off** by default for all events. Enable it per-event in `config.yaml`
 
 ## Configuration
 
-Edit `~/.claude/plugins/patlite/config.yaml` to customize behavior. Changes take effect immediately — no restart needed.
+Edit `~/.claude/plugins/usb_led/config.yaml` to customize behavior. Changes take effect immediately — no restart needed.
 
-Ready-made configs for non-Patlite devices are in the [`examples/`](examples/) directory — copy the right one over `~/.claude/plugins/patlite/config.yaml`.
+Ready-made configs for each device family are in the [`examples/`](examples/) directory — copy the right one over `~/.claude/plugins/usb_led/config.yaml`.
 
 ```yaml
 device:
-  driver: patlite  # Options: patlite | luxafor | blink1
-  vid: 0x191A      # Override VID (optional — driver default used if omitted)
-  pid: 0x6001      # Override PID (optional — driver default used if omitted)
+  driver: patlite   # Options: patlite | luxafor | blink1
+  # vid/pid are auto-resolved from the driver; uncomment to override:
+  # vid: 0x191A    # patlite / 0x04D8 luxafor / 0x27B8 blink1
+  # pid: 0x6001    # patlite / 0xF372 luxafor / 0x01ED blink1
 
 events:
   notification:
@@ -325,14 +334,14 @@ events:
 
 ## Manual control
 
-Run `patlite.py` directly from any terminal to test signals or build automations:
+Run `usb_led.py` directly from any terminal to test signals or build automations:
 
 ```bash
 # From the installed location
-python ~/.claude/plugins/patlite/patlite.py <event>
+python ~/.claude/plugins/usb_led/usb_led.py <event>
 
 # From the repo
-python patlite.py <event>
+python usb_led.py <event>
 ```
 
 Available events: `notification`, `stop`, `working`, `pre_tool`, `post_tool`, `idle`, `off`
@@ -394,7 +403,7 @@ Source: [todbot/blink1](https://github.com/todbot/blink1)
 
 ### Claude Code hooks
 
-The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patlite.py <event>` as a shell command. All hooks use `"allowFailure": true` so Claude Code continues normally if the device is unplugged.
+The installer adds entries to `~/.claude/settings.json`. Each hook invokes `usb_led.py <event>` as a shell command. All hooks use `"allowFailure": true` so Claude Code continues normally if the device is unplugged.
 
 | Hook | Trigger |
 |------|---------|
@@ -418,13 +427,14 @@ The installer adds entries to `~/.claude/settings.json`. Each hook invokes `patl
 - This happens when hooks are added via the `/hooks` dialog (bash eats backslashes in the command)
 - Fix: `python fix_hooks.py` then restart Claude Code
 
-**`No Patlite device found` error**
-- Confirm the device is plugged in:
+**Device not detected**
+- Confirm the device is plugged in and run `python3 install.py --test` to check all families
+- Enumerate all HID devices to find your device's VID/PID:
   ```bash
   # pip hid package
-  python3 -c "import hid; [print(d) for d in hid.enumerate() if d['vendor_id'] == 0x191A]"
+  python3 -c "import hid; [print(hex(d['vendor_id']), hex(d['product_id']), d['product_string']) for d in hid.enumerate()]"
   # Debian python3-hidapi package
-  python3 -c "import hidapi; [print(d) for d in hidapi.enumerate(0x191A)]"
+  python3 -c "import hidapi; [print(d) for d in hidapi.enumerate()]"
   ```
 - On Linux: check udev rules and `plugdev` group membership
 
@@ -444,7 +454,7 @@ Or install `python3-venv` and re-run `python3 install.py` to let the installer c
 - Check which you have: `pip list | grep -i hid`
 
 **Light stuck on a color**
-- Run: `python ~/.claude/plugins/patlite/patlite.py off`
+- Run: `python ~/.claude/plugins/usb_led/usb_led.py off`
 
 **Buzzer keeps playing after Claude finishes**
 - The `keep` buzzer value (default) leaves whatever the device is doing. If a previous event started the buzzer, set a later event's `buzzer: "off"` to stop it. For example, setting `stop.buzzer: "off"` will silence the buzzer whenever Claude finishes.
@@ -459,7 +469,7 @@ Or install `python3-venv` and re-run `python3 install.py` to let the installer c
 - On Linux/X11: install `python3-xlib` (`sudo apt install python3-xlib`) to enable automatic terminal focus before injection
 
 **Wrong Python used by hooks**
-- Re-run `python install.py --uninstall` then `python install.py` with the correct Python interpreter
+- Re-run `python3 install.py --uninstall` then `python3 install.py` with the correct Python interpreter
 
 ---
 
